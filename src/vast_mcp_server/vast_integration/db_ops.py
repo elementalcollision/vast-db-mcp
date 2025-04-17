@@ -2,8 +2,11 @@ import vastdb
 import asyncio
 import csv
 import io
+import logging # Import logging
 from .. import config  # Import configuration from the parent package
 
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 def create_vast_connection() -> vastdb.api.VastSession:
     """Creates and returns a VAST DB connection session.
@@ -16,6 +19,7 @@ def create_vast_connection() -> vastdb.api.VastSession:
     Raises:
         Exception: If connection fails (specific exception type may vary based on SDK).
     """
+    logger.debug("Attempting to connect to VAST DB at %s", config.VAST_DB_ENDPOINT)
     try:
         # Assuming vastdb.connect uses these parameters.
         # Adjust based on the actual VAST DB SDK's connect function signature.
@@ -25,10 +29,10 @@ def create_vast_connection() -> vastdb.api.VastSession:
             secret_key=config.VAST_SECRET_KEY,
             # Add any other necessary connection parameters here, e.g., verify_ssl=False
         )
-        print("Successfully connected to VAST DB.") # Optional: for debugging
+        logger.info("Successfully connected to VAST DB.") # Optional: for debugging
         return conn
     except Exception as e:
-        print(f"Error connecting to VAST DB: {e}")
+        logger.error("Error connecting to VAST DB: %s", e, exc_info=True)
         # Re-raise the exception or handle it more gracefully depending on requirements
         raise
 
@@ -37,47 +41,56 @@ def create_vast_connection() -> vastdb.api.VastSession:
 
 def _fetch_schema_sync() -> str:
     """Synchronous helper function to fetch and format schema."""
+    logger.debug("Starting synchronous schema fetch.")
     conn = None
     try:
         conn = create_vast_connection()
+        if not conn: # Connection might have failed and raised in create_vast_connection
+             return "Error: Failed to establish database connection for schema fetch."
         cursor = conn.cursor()
 
-        # Fetch table names (adjust SQL if needed for VAST DB)
+        logger.debug("Executing SHOW TABLES")
         cursor.execute("SHOW TABLES")
         tables = cursor.fetchall()
-        # Assuming fetchall returns a list of tuples, e.g., [('table1',), ('table2',)]
         table_names = [t[0] for t in tables if t]
+        logger.info("Found %d tables: %s", len(table_names), table_names)
 
         schema_parts = []
         for table_name in table_names:
-            # Fetch columns for each table (adjust SQL if needed for VAST DB)
-            # Using DESCRIBE or similar command
+            logger.debug("Describing table: %s", table_name)
             try:
-                cursor.execute(f"DESCRIBE TABLE {table_name}") # Or SHOW COLUMNS FROM table_name
+                # Using DESCRIBE or similar command - adjust SQL if needed for VAST DB
+                cursor.execute(f"DESCRIBE TABLE {table_name}")
                 columns = cursor.fetchall()
-                # Assuming fetchall returns list like [('col1', 'type1', ...), ('col2', 'type2', ...)]
                 schema_parts.append(f"TABLE: {table_name}")
-                col_defs = [f"  - {col[0]} ({col[1]})" for col in columns]
+                col_defs = [f"  - {col[0]} ({col[1]})" for col in columns] # Assuming name, type are first 2
                 schema_parts.extend(col_defs)
-                schema_parts.append("") # Add spacing
+                schema_parts.append("")
+                logger.debug("Successfully described table: %s", table_name)
             except Exception as desc_e:
+                logger.warning("Error describing table '%s': %s", table_name, desc_e, exc_info=True)
                 schema_parts.append(f"TABLE: {table_name}")
                 schema_parts.append(f"  - Error describing table: {desc_e}")
                 schema_parts.append("")
 
         if not schema_parts:
+            logger.warning("No tables found or unable to describe any tables.")
             return "-- No tables found or unable to describe tables. --"
 
+        logger.debug("Schema fetch completed successfully.")
         return "\n".join(schema_parts)
 
     except Exception as e:
+        logger.error("Error fetching schema from VAST DB: %s", e, exc_info=True)
+        # Return error message instead of raising here, as async wrapper expects string
         return f"Error fetching schema from VAST DB: {e}"
     finally:
         if conn:
             try:
-                conn.close() # Ensure connection is closed
+                logger.debug("Closing VAST DB connection after schema fetch.")
+                conn.close()
             except Exception as close_e:
-                print(f"Error closing VAST DB connection: {close_e}")
+                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
 async def get_db_schema() -> str:
     """Fetches the database schema asynchronously.
@@ -85,33 +98,40 @@ async def get_db_schema() -> str:
     Returns:
         str: A string representation of the schema.
     """
-    # Run the synchronous database operations in a separate thread
-    return await asyncio.to_thread(_fetch_schema_sync)
+    logger.info("Received request to fetch DB schema.")
+    result = await asyncio.to_thread(_fetch_schema_sync)
+    return result
 
 def _fetch_table_sample_sync(table_name: str, limit: int) -> str:
     """Synchronous helper function to fetch and format table sample data."""
+    logger.debug("Starting synchronous table sample fetch for table '%s' limit %d.", table_name, limit)
     conn = None
     try:
         conn = create_vast_connection()
+        if not conn:
+            return "Error: Failed to establish database connection for table sample fetch."
         cursor = conn.cursor()
 
-        # Basic input validation (consider more robust validation/sanitization)
-        if not table_name.isidentifier(): # Simple check against SQL injection
+        # Basic input validation
+        if not table_name.isidentifier():
+             logger.warning("Invalid table name requested for sample: %s", table_name)
              return f"Error: Invalid table name '{table_name}'."
         if not isinstance(limit, int) or limit <= 0:
-            limit = 10 # Default to 10 if limit is invalid
+            logger.warning("Invalid limit %s provided for table sample, defaulting to 10.", limit)
+            limit = 10
 
         # Execute query
-        # WARNING: Directly formatting table names can be risky if table_name isn't validated thoroughly.
-        # Using parameterized queries is generally safer if the DBAPI driver supports them for identifiers.
         query = f"SELECT * FROM {table_name} LIMIT {limit}"
+        logger.debug("Executing query: %s", query)
         cursor.execute(query)
 
         # Fetch results and column names
         results = cursor.fetchall()
         column_names = [desc[0] for desc in cursor.description] if cursor.description else []
+        logger.info("Fetched %d rows from table '%s' with columns: %s", len(results), table_name, column_names)
 
         if not results:
+            logger.info("No data found in table '%s' for sample.", table_name)
             return f"-- No data found in table '{table_name}' or table does not exist. --"
 
         # Format results as CSV string
@@ -119,17 +139,20 @@ def _fetch_table_sample_sync(table_name: str, limit: int) -> str:
         writer = csv.writer(output)
         writer.writerow(column_names)
         writer.writerows(results)
-        return output.getvalue()
+        csv_output = output.getvalue()
+        logger.debug("Formatted sample data for '%s' as CSV string.", table_name)
+        return csv_output
 
     except Exception as e:
-        # Catch specific VAST DB exceptions if known, otherwise generic Exception
+        logger.error("Error fetching sample data for table '%s': %s", table_name, e, exc_info=True)
         return f"Error fetching sample data for table '{table_name}' from VAST DB: {e}"
     finally:
         if conn:
             try:
+                logger.debug("Closing VAST DB connection after table sample fetch.")
                 conn.close()
             except Exception as close_e:
-                print(f"Error closing VAST DB connection: {close_e}")
+                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
 async def get_table_sample(table_name: str, limit: int = 10) -> str:
     """Fetches a sample of data from a table asynchronously.
@@ -141,35 +164,39 @@ async def get_table_sample(table_name: str, limit: int = 10) -> str:
     Returns:
         str: A string representation of the sample data (e.g., CSV).
     """
-    # Run the synchronous database operations in a separate thread
-    return await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit)
+    logger.info("Received request for table sample: table='%s', limit=%d", table_name, limit)
+    result = await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit)
+    return result
 
 def _execute_sql_sync(sql: str) -> str:
     """Synchronous helper function to execute a SQL query and format results."""
-    # Security Check: Only allow SELECT statements for now
-    # Consider making this configurable or using more sophisticated parsing/allow-listing
-    if not sql.strip().upper().startswith("SELECT"):
+    logger.debug("Starting synchronous SQL execution: %s...", sql[:100])
+    # Security Check
+    clean_sql = sql.strip().upper()
+    if not clean_sql.startswith("SELECT"):
+        logger.warning("Rejected non-SELECT query: %s...", sql[:100])
         return "Error: Only SELECT queries are currently allowed for safety."
 
     conn = None
     try:
         conn = create_vast_connection()
+        if not conn:
+            return "Error: Failed to establish database connection for SQL query execution."
         cursor = conn.cursor()
 
-        # Execute the validated query
-        cursor.execute(sql)
+        logger.debug("Executing validated SQL query.")
+        cursor.execute(sql) # Execute original SQL, not uppercased version
 
-        # Check if the query was a SELECT or similar that returns results
         if cursor.description is None:
-            # Might be an empty result set or a non-select query that slipped through
-            # Or a DDL/DML if the check above was bypassed/modified
+            logger.info("SQL query executed, but no description/results returned.")
             return "-- Query executed, but no results returned (or not a SELECT query). --"
 
-        # Fetch results and column names
         results = cursor.fetchall()
         column_names = [desc[0] for desc in cursor.description]
+        logger.info("SQL query returned %d rows with columns: %s", len(results), column_names)
 
         if not results:
+            logger.info("SQL query returned no rows.")
             return "-- Query executed successfully, but returned no rows. --"
 
         # Format results as CSV string
@@ -177,17 +204,20 @@ def _execute_sql_sync(sql: str) -> str:
         writer = csv.writer(output)
         writer.writerow(column_names)
         writer.writerows(results)
-        return output.getvalue()
+        csv_output = output.getvalue()
+        logger.debug("Formatted SQL query results as CSV string.")
+        return csv_output
 
     except Exception as e:
-        # Catch specific VAST DB/SQL exceptions if possible
+        logger.error("Error executing SQL query: %s", e, exc_info=True)
         return f"Error executing SQL query in VAST DB: {e}"
     finally:
         if conn:
             try:
+                logger.debug("Closing VAST DB connection after SQL query execution.")
                 conn.close()
             except Exception as close_e:
-                print(f"Error closing VAST DB connection: {close_e}")
+                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
 async def execute_sql_query(sql: str) -> str:
     """Executes a read-only SQL query asynchronously.
@@ -198,5 +228,6 @@ async def execute_sql_query(sql: str) -> str:
     Returns:
         str: A string representation of the query results (e.g., CSV) or an error message.
     """
-    # Run the synchronous database operations in a separate thread
-    return await asyncio.to_thread(_execute_sql_sync, sql)
+    logger.info("Received request to execute SQL query: %s...", sql[:100])
+    result = await asyncio.to_thread(_execute_sql_sync, sql)
+    return result
