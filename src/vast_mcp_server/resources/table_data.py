@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 
 from ..server import mcp_app
 from ..vast_integration import db_ops
+from ..exceptions import VastMcpError, InvalidInputError
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,15 @@ def _format_results(data: List[Dict[str, Any]], format_type: str) -> str:
             writer.writerows(data)
         return output.getvalue()
 
+def _format_error(e: Exception, format_type: str) -> str:
+    """Formats an exception into a string, potentially JSON."""
+    error_type = type(e).__name__
+    message = str(e)
+    if format_type == "json":
+        error_obj = {"error": {"type": error_type, "message": message}}
+        return json.dumps(error_obj)
+    else:
+        return f"ERROR: [{error_type}] {message}"
 
 @mcp_app.resource("vast://tables/{table_name}")
 async def get_vast_table_sample(table_name: str, limit: Optional[int] = 10, format: str = "csv") -> str:
@@ -55,32 +65,31 @@ async def get_vast_table_sample(table_name: str, limit: Optional[int] = 10, form
     )
 
     try:
-        # db_ops now returns List[Dict] or str (error/message)
+        # db_ops now returns List[Dict] or str (message) or raises VastMcpError
         result_data = await db_ops.get_table_sample(table_name, effective_limit)
 
         if isinstance(result_data, str):
-            # It's an error or informational message from db_ops
-            logger.warning("Received message/error from db_ops for table '%s': %s", table_name, result_data)
+            # It's an informational message (e.g., "-- No data found --")
+            logger.info("Received message from db_ops for table '%s': %s", table_name, result_data)
+            # Return message directly, maybe format as JSON if requested?
+            # if format_type == "json": return json.dumps({"message": result_data})
             return result_data
         elif isinstance(result_data, list):
             # Format the list of dicts
-            logger.debug("Table sample resource request successful for table '%s', formatting as %s.", table_name, format_type)
+            logger.debug("Formatting successful table sample for '%s' as %s.", table_name, format_type)
             return _format_results(result_data, format_type)
         else:
-            # Should not happen based on db_ops return type hint, but handle defensively
-            logger.error("Unexpected data type received from db_ops.get_table_sample: %s", type(result_data))
-            return "Error: Unexpected internal data format received."
+            # Should not happen
+            logger.error("Unexpected data type from db_ops.get_table_sample: %s", type(result_data))
+            raise TypeError("Unexpected internal data format.") # Raise internal error
 
+    except InvalidInputError as e:
+        logger.warning("Invalid input for vast://tables/%s: %s", table_name, e)
+        return _format_error(e, format_type)
+    except VastMcpError as e:
+        logger.error("Database error handling vast://tables/%s: %s", table_name, e, exc_info=True)
+        return _format_error(e, format_type)
     except Exception as e:
-        logger.error(
-            "Error handling vast://tables/%s resource request: %s",
-            table_name,
-            e,
-            exc_info=True
-        )
-        # Return an error message to the client
-        err_msg = f"Error retrieving sample data for table '{table_name}': {e}"
-        # Optionally format error as JSON if JSON was requested
-        # if format_type == "json":
-        #     return json.dumps({"error": err_msg})
-        return err_msg
+        # Catch any other unexpected errors during processing or formatting
+        logger.exception("Unexpected error handling vast://tables/%s: %s", table_name, e)
+        return _format_error(e, format_type)

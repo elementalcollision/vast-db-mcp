@@ -55,7 +55,8 @@ To provide a secure and structured way for AI models to query information (schem
 
 *   **Resource: Database Schema**
     *   **URI:** `vast://schemas`
-    *   **Description:** Returns a formatted string describing all discovered tables and their columns (name and type).
+    *   **Description:** Returns a formatted string describing all discovered tables and their columns (name and type). Partial results may be returned if describing some tables fails.
+    *   **Error Handling:** Returns `ERROR: [ErrorType] Message` on failure (e.g., connection error, general schema fetch error).
 *   **Resource: Table Sample Data**
     *   **URI:** `vast://tables/{table_name}?limit=N&format=FMT`
     *   **Description:** Returns a sample of data from the specified `table_name`.
@@ -63,6 +64,7 @@ To provide a secure and structured way for AI models to query information (schem
         *   `limit` (integer, optional, default: 10): Maximum number of rows.
         *   `format` (string, optional, default: `csv`): Output format (`csv` or `json`).
     *   **Format:** CSV or JSON string (array of objects), including header row for CSV.
+    *   **Error Handling:** Returns formatted error string (CSV: `ERROR: [ErrorType] Message`, JSON: `{"error": {"type": "ErrorType", "message": "Message"}}`) on failure (e.g., connection error, query error, invalid table name).
 *   **Tool: SQL Query Executor**
     *   **Name:** `vast_sql_query`
     *   **Arguments:**
@@ -70,7 +72,8 @@ To provide a secure and structured way for AI models to query information (schem
         *   `format` (string, optional, default: `csv`): Output format (`csv` or `json`).
     *   **Description:** Executes the provided SQL query against VAST DB.
     *   **Format:** Returns results as a CSV or JSON string (array of objects) or an error message.
-    *   **Safety:** Currently restricted to only allow `SELECT` statements.
+    *   **Safety:** Currently restricted to only allow `SELECT` statements (raises `InvalidInputError` otherwise).
+    *   **Error Handling:** Returns formatted error string (CSV: `ERROR: [ErrorType] Message`, JSON: `{"error": {"type": "ErrorType", "message": "Message"}}`) on failure (e.g., connection error, query error).
 
 ## How to Run
 
@@ -113,10 +116,10 @@ This project uses `pytest` for unit testing.
 
 ## Potential Next Steps
 
-*   Implement robust logging.
-*   Add unit tests.
-*   Refine output formats (e.g., offer JSON alongside CSV).
-*   Enhance error handling and reporting.
+*   Implement robust logging. *(Done)*
+*   Add unit tests. *(Done)*
+*   Refine output formats (e.g., offer JSON alongside CSV). *(Done)*
+*   Enhance error handling and reporting. *(Done - basic custom exceptions and formatting)*
 *   Add more granular resources/tools (e.g., list only tables, get table metadata).
 *   Implement more sophisticated query validation/sandboxing for the `vast_sql_query` tool.
 *   Make query restrictions (e.g., allowing non-SELECT) configurable.

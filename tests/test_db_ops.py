@@ -7,6 +7,14 @@ import io
 # we can import directly from vast_mcp_server
 from vast_mcp_server.vast_integration import db_ops
 from vast_mcp_server import config
+# Import custom exceptions to test for them
+from vast_mcp_server.exceptions import (
+    DatabaseConnectionError,
+    SchemaFetchError,
+    TableDescribeError,
+    QueryExecutionError,
+    InvalidInputError
+)
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
@@ -43,16 +51,18 @@ def test_create_vast_connection_success(mocker):
     assert conn is mock_conn_obj
 
 def test_create_vast_connection_failure(mocker):
-    """Test database connection failure."""
+    """Test database connection failure raises DatabaseConnectionError."""
     # Arrange
     mock_connect = mocker.patch('vastdb.connect')
-    test_exception = ConnectionError("Test DB connection failed")
-    mock_connect.side_effect = test_exception
+    original_exception = ConnectionError("Network Error")
+    mock_connect.side_effect = original_exception
 
     # Act & Assert
-    with pytest.raises(ConnectionError, match="Test DB connection failed"):
+    with pytest.raises(DatabaseConnectionError) as excinfo:
         db_ops.create_vast_connection()
 
+    assert "Failed to connect to VAST DB" in str(excinfo.value)
+    assert excinfo.value.original_exception is original_exception
     mock_connect.assert_called_once()
 
 
@@ -107,13 +117,13 @@ async def test_get_db_schema_no_tables(mocker):
     schema_output = await db_ops.get_db_schema()
 
     # Assert
-    assert schema_output == "-- No tables found or unable to describe tables. --"
+    assert schema_output == "-- No tables found in the database. --" # Updated message
     mock_create_conn.assert_called_once()
     mock_cursor.execute.assert_called_once_with("SHOW TABLES")
     mock_conn.close.assert_called_once()
 
-async def test_get_db_schema_describe_error(mocker):
-    """Test handling of an error when describing a specific table."""
+async def test_get_db_schema_describe_error_returns_partial(mocker):
+    """Test schema fetch still returns partial schema even if describe fails."""
     # Arrange
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
     describe_exception = Exception("Describe permission denied")
@@ -134,13 +144,13 @@ async def test_get_db_schema_describe_error(mocker):
     # Act
     schema_output = await db_ops.get_db_schema()
 
-    # Assert
+    # Assert - Check that the error message is embedded in the output
     expected_output = (
         "TABLE: table1\n"
         "  - col1 (INT)\n"
         "\n"
         "TABLE: sensitive_table\n"
-        f"  - Error describing table: {describe_exception}\n"
+        f"  - !!! Error describing table: {describe_exception} !!!\n"
         "\n"
     )
     assert schema_output == expected_output
@@ -148,43 +158,37 @@ async def test_get_db_schema_describe_error(mocker):
     assert mock_cursor.execute.call_count == 3
     mock_conn.close.assert_called_once()
 
-async def test_get_db_schema_show_tables_error(mocker):
-    """Test handling of an error during the initial SHOW TABLES query."""
+async def test_get_db_schema_show_tables_error_raises(mocker):
+    """Test error during SHOW TABLES raises SchemaFetchError."""
     # Arrange
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
-    show_tables_exception = Exception("Cannot list tables")
-    mock_cursor.execute.side_effect = show_tables_exception
+    original_exception = Exception("Cannot list tables")
+    mock_cursor.execute.side_effect = original_exception
 
-    # Act
-    schema_output = await db_ops.get_db_schema()
+    # Act & Assert
+    with pytest.raises(SchemaFetchError) as excinfo:
+        await db_ops.get_db_schema()
 
-    # Assert
-    expected_error_msg = f"Error fetching schema from VAST DB: {show_tables_exception}"
-    assert schema_output == expected_error_msg
+    assert "Error fetching schema" in str(excinfo.value)
+    assert excinfo.value.original_exception is original_exception
     mock_create_conn.assert_called_once()
     mock_cursor.execute.assert_called_once_with("SHOW TABLES")
-    # Connection might not be closed if exception happens early in try block
-    # Depending on exact logic, conn.close() might or might not be called.
-    # For robustness, we might not assert close() here, or check specifically.
-    # Let's assert it was called, assuming the finally block runs.
     mock_conn.close.assert_called_once()
 
-async def test_get_db_schema_connection_error(mocker):
-    """Test handling of a connection error."""
+async def test_get_db_schema_connection_error_raises(mocker):
+    """Test connection error raises DatabaseConnectionError."""
     # Arrange
-    conn_exception = ConnectionError("Failed to connect")
+    conn_exception = DatabaseConnectionError("Failed to connect")
     mock_create_conn = mocker.patch(
         'vast_mcp_server.vast_integration.db_ops.create_vast_connection',
         side_effect=conn_exception
     )
 
-    # Act
-    schema_output = await db_ops.get_db_schema()
+    # Act & Assert
+    with pytest.raises(DatabaseConnectionError) as excinfo:
+        await db_ops.get_db_schema()
 
-    # Assert
-    # The error happens in the sync part, wrapped by the async function
-    expected_error_msg = f"Error fetching schema from VAST DB: {conn_exception}"
-    assert schema_output == expected_error_msg
+    assert excinfo.value is conn_exception
     mock_create_conn.assert_called_once()
 
 
@@ -231,22 +235,22 @@ async def test_get_table_sample_no_data(mocker):
     mock_cursor.execute.assert_called_once_with(f"SELECT * FROM {table_name} LIMIT {limit}")
     mock_conn.close.assert_called_once()
 
-async def test_get_table_sample_invalid_table_name(mocker):
-    """Test handling of invalid table name (potential SQL injection)."""
+async def test_get_table_sample_invalid_table_name_raises(mocker):
+    """Test invalid table name raises InvalidInputError."""
     # Arrange
-    table_name = "invalid-name; DROP TABLES"
+    table_name = "invalid-name;" # Just needs to fail isidentifier
     limit = 10
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
 
-    # Act
-    output = await db_ops.get_table_sample(table_name, limit)
+    # Act & Assert
+    with pytest.raises(InvalidInputError) as excinfo:
+        await db_ops.get_table_sample(table_name, limit)
 
-    # Assert
-    expected_msg = f"Error: Invalid table name '{table_name}'."
-    assert output == expected_msg
-    mock_create_conn.assert_called_once() # Connection is made before validation
-    mock_cursor.execute.assert_not_called() # Execute should not be called
-    mock_conn.close.assert_called_once()
+    assert f"Invalid table name '{table_name}'" in str(excinfo.value)
+    # Validation happens before connection in this case
+    mock_create_conn.assert_not_called()
+    mock_cursor.execute.assert_not_called()
+    mock_conn.close.assert_not_called()
 
 @pytest.mark.parametrize("invalid_limit", [-1, 0, "abc", None])
 async def test_get_table_sample_invalid_limit_defaults_to_10(mocker, invalid_limit):
@@ -268,42 +272,41 @@ async def test_get_table_sample_invalid_limit_defaults_to_10(mocker, invalid_lim
     mock_cursor.execute.assert_called_once_with(f"SELECT * FROM {table_name} LIMIT {default_limit}")
     mock_conn.close.assert_called_once()
 
-async def test_get_table_sample_execution_error(mocker):
-    """Test handling of error during SQL execution."""
+async def test_get_table_sample_execution_error_raises(mocker):
+    """Test SQL execution error raises QueryExecutionError."""
     # Arrange
     table_name = "error_table"
     limit = 10
-    sql_exception = Exception("Syntax error near FROM")
+    original_exception = Exception("Syntax error")
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
-    mock_cursor.execute.side_effect = sql_exception
+    mock_cursor.execute.side_effect = original_exception
 
-    # Act
-    output = await db_ops.get_table_sample(table_name, limit)
+    # Act & Assert
+    with pytest.raises(QueryExecutionError) as excinfo:
+        await db_ops.get_table_sample(table_name, limit)
 
-    # Assert
-    expected_msg = f"Error fetching sample data for table '{table_name}' from VAST DB: {sql_exception}"
-    assert output == expected_msg
+    assert f"Failed to execute sample query for table '{table_name}'" in str(excinfo.value)
+    assert excinfo.value.original_exception is original_exception
     mock_create_conn.assert_called_once()
     mock_cursor.execute.assert_called_once_with(f"SELECT * FROM {table_name} LIMIT {limit}")
     mock_conn.close.assert_called_once()
 
-async def test_get_table_sample_connection_error(mocker):
-    """Test handling of connection error for table sample."""
+async def test_get_table_sample_connection_error_raises(mocker):
+    """Test connection error raises DatabaseConnectionError."""
     # Arrange
     table_name = "any_table"
     limit = 10
-    conn_exception = ConnectionError("Cannot connect to DB")
+    conn_exception = DatabaseConnectionError("Cannot connect to DB")
     mock_create_conn = mocker.patch(
         'vast_mcp_server.vast_integration.db_ops.create_vast_connection',
         side_effect=conn_exception
     )
 
-    # Act
-    output = await db_ops.get_table_sample(table_name, limit)
+    # Act & Assert
+    with pytest.raises(DatabaseConnectionError) as excinfo:
+        await db_ops.get_table_sample(table_name, limit)
 
-    # Assert
-    expected_msg = f"Error fetching sample data for table '{table_name}' from VAST DB: {conn_exception}"
-    assert output == expected_msg
+    assert excinfo.value is conn_exception
     mock_create_conn.assert_called_once()
 
 
@@ -335,17 +338,16 @@ async def test_execute_sql_query_success(mocker):
     " create table new_t (c int);",
     "-- SELECT * FROM users; \nDROP TABLE users;",
 ])
-async def test_execute_sql_query_rejects_non_select(mocker, non_select_sql):
-    """Test that non-SELECT statements are rejected."""
+async def test_execute_sql_query_rejects_non_select_raises(mocker, non_select_sql):
+    """Test non-SELECT statements raise InvalidInputError."""
     # Arrange
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
 
-    # Act
-    output = await db_ops.execute_sql_query(non_select_sql)
+    # Act & Assert
+    with pytest.raises(InvalidInputError) as excinfo:
+        await db_ops.execute_sql_query(non_select_sql)
 
-    # Assert
-    assert output == "Error: Only SELECT queries are currently allowed for safety."
-    # Non-select check now happens *before* connection
+    assert "Only SELECT queries are currently allowed" in str(excinfo.value)
     mock_create_conn.assert_not_called()
     mock_cursor.execute.assert_not_called()
     mock_conn.close.assert_not_called()
@@ -384,40 +386,39 @@ async def test_execute_sql_query_no_description(mocker):
     mock_cursor.execute.assert_called_once_with(sql)
     mock_conn.close.assert_called_once()
 
-async def test_execute_sql_query_execution_error(mocker):
-    """Test handling of an error during SQL execution."""
+async def test_execute_sql_query_execution_error_raises(mocker):
+    """Test SQL execution error raises QueryExecutionError."""
     # Arrange
     sql = "SELECT bad_col FROM users"
-    sql_exception = Exception("Column 'bad_col' not found")
+    original_exception = Exception("Column 'bad_col' not found")
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
-    mock_cursor.execute.side_effect = sql_exception
+    mock_cursor.execute.side_effect = original_exception
 
-    # Act
-    output = await db_ops.execute_sql_query(sql)
+    # Act & Assert
+    with pytest.raises(QueryExecutionError) as excinfo:
+        await db_ops.execute_sql_query(sql)
 
-    # Assert
-    expected_msg = f"Error executing SQL query in VAST DB: {sql_exception}"
-    assert output == expected_msg
+    assert "Error executing SQL query" in str(excinfo.value)
+    assert excinfo.value.original_exception is original_exception
     mock_create_conn.assert_called_once()
     mock_cursor.execute.assert_called_once_with(sql)
     mock_conn.close.assert_called_once()
 
-async def test_execute_sql_query_connection_error(mocker):
-    """Test handling of a connection error."""
+async def test_execute_sql_query_connection_error_raises(mocker):
+    """Test connection error raises DatabaseConnectionError."""
     # Arrange
     sql = "SELECT 1"
-    conn_exception = ConnectionError("DB connection failed")
+    conn_exception = DatabaseConnectionError("DB connection failed")
     mock_create_conn = mocker.patch(
         'vast_mcp_server.vast_integration.db_ops.create_vast_connection',
         side_effect=conn_exception
     )
 
-    # Act
-    output = await db_ops.execute_sql_query(sql)
+    # Act & Assert
+    with pytest.raises(DatabaseConnectionError) as excinfo:
+        await db_ops.execute_sql_query(sql)
 
-    # Assert
-    expected_msg = f"Error executing SQL query in VAST DB: {conn_exception}"
-    assert output == expected_msg
+    assert excinfo.value is conn_exception
     mock_create_conn.assert_called_once()
 
     # TODO: Add tests for execute_sql_query 

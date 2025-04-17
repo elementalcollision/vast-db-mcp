@@ -5,12 +5,23 @@ import io
 import logging # Import logging
 from .. import config  # Import configuration from the parent package
 from typing import List, Dict, Any, Union
+# Import custom exceptions
+from ..exceptions import (
+    DatabaseConnectionError,
+    SchemaFetchError,
+    TableDescribeError,
+    QueryExecutionError,
+    InvalidInputError,
+    VastMcpError
+)
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
-# Define a type alias for structured results or error messages
+# Define a type alias for structured results or specific messages
 QueryResult = Union[List[Dict[str, Any]], str]
+# Define type alias for Schema info (always string for now)
+SchemaResult = str
 
 def create_vast_connection() -> vastdb.api.VastSession:
     """Creates and returns a VAST DB connection session.
@@ -21,7 +32,7 @@ def create_vast_connection() -> vastdb.api.VastSession:
         vastdb.api.VastSession: An active VAST DB session.
 
     Raises:
-        Exception: If connection fails (specific exception type may vary based on SDK).
+        DatabaseConnectionError: If connection fails.
     """
     logger.debug("Attempting to connect to VAST DB at %s", config.VAST_DB_ENDPOINT)
     try:
@@ -36,15 +47,24 @@ def create_vast_connection() -> vastdb.api.VastSession:
         logger.info("Successfully connected to VAST DB.") # Optional: for debugging
         return conn
     except Exception as e:
-        logger.error("Error connecting to VAST DB: %s", e, exc_info=True)
-        # Re-raise the exception or handle it more gracefully depending on requirements
-        raise
+        logger.error("Connection to VAST DB failed: %s", e, exc_info=True)
+        # Wrap the original exception
+        raise DatabaseConnectionError(f"Failed to connect to VAST DB: {e}", original_exception=e)
 
 
 # --- Database Operations ---
 
-def _fetch_schema_sync() -> str:
-    """Synchronous helper function to fetch and format schema."""
+def _fetch_schema_sync() -> SchemaResult:
+    """Synchronous helper function to fetch and format schema.
+
+    Returns:
+        str: A string representation of the schema.
+
+    Raises:
+        DatabaseConnectionError: If connection fails.
+        SchemaFetchError: If unable to fetch schema.
+        TableDescribeError: If unable to describe tables.
+    """
     logger.debug("Starting synchronous schema fetch.")
     conn = None
     try:
@@ -59,7 +79,12 @@ def _fetch_schema_sync() -> str:
         table_names = [t[0] for t in tables if t]
         logger.info("Found %d tables: %s", len(table_names), table_names)
 
+        if not table_names:
+             logger.warning("No tables found in database.")
+             return "-- No tables found in the database. --"
+
         schema_parts = []
+        describe_errors = []
         for table_name in table_names:
             logger.debug("Describing table: %s", table_name)
             try:
@@ -72,22 +97,30 @@ def _fetch_schema_sync() -> str:
                 schema_parts.append("")
                 logger.debug("Successfully described table: %s", table_name)
             except Exception as desc_e:
-                logger.warning("Error describing table '%s': %s", table_name, desc_e, exc_info=True)
+                logger.warning("Error describing table '%s': %s", table_name, desc_e)
+                # Store the error to potentially raise later or include in message
+                describe_errors.append(f"Error describing table '{table_name}': {desc_e}")
+                # Add error indication to the output schema string
                 schema_parts.append(f"TABLE: {table_name}")
-                schema_parts.append(f"  - Error describing table: {desc_e}")
+                schema_parts.append(f"  - !!! Error describing table: {desc_e} !!!")
                 schema_parts.append("")
+                # Optionally, raise immediately if one failure should stop the whole process:
+                # raise TableDescribeError(f"Failed to describe table '{table_name}': {desc_e}", original_exception=desc_e)
 
-        if not schema_parts:
-            logger.warning("No tables found or unable to describe any tables.")
-            return "-- No tables found or unable to describe tables. --"
+        schema_output = "\n".join(schema_parts)
+        # If we encountered errors describing *some* tables, we could still return the partial schema
+        # or raise a higher-level error. Let's return partial for now, logging indicates issues.
+        if describe_errors:
+            logger.warning("Finished schema fetch with %d describe errors.", len(describe_errors))
 
-        logger.debug("Schema fetch completed successfully.")
-        return "\n".join(schema_parts)
+        logger.debug("Schema fetch completed.")
+        return schema_output
 
+    except DatabaseConnectionError: # Re-raise specific connection errors
+        raise
     except Exception as e:
-        logger.error("Error fetching schema from VAST DB: %s", e, exc_info=True)
-        # Return error message instead of raising here, as async wrapper expects string
-        return f"Error fetching schema from VAST DB: {e}"
+        logger.error("Generic error during schema fetch: %s", e, exc_info=True)
+        raise SchemaFetchError(f"Error fetching schema: {e}", original_exception=e)
     finally:
         if conn:
             try:
@@ -96,18 +129,27 @@ def _fetch_schema_sync() -> str:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def get_db_schema() -> str:
+async def get_db_schema() -> SchemaResult:
     """Fetches the database schema asynchronously.
 
     Returns:
         str: A string representation of the schema.
     """
     logger.info("Received request to fetch DB schema.")
-    result = await asyncio.to_thread(_fetch_schema_sync)
-    return result
+    # Let exceptions propagate up to the handler
+    return await asyncio.to_thread(_fetch_schema_sync)
 
 def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
-    """Synchronous helper function to fetch table sample data as list of dicts or error string."""
+    """Synchronous helper function to fetch table sample data as list of dicts or error string.
+
+    Returns:
+        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
+
+    Raises:
+        InvalidInputError: If table name is invalid.
+        DatabaseConnectionError: If unable to establish database connection.
+        QueryExecutionError: If unable to execute query.
+    """
     logger.debug("Starting synchronous table sample fetch for table '%s' limit %d.", table_name, limit)
     conn = None
     try:
@@ -119,7 +161,7 @@ def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
         # Basic input validation
         if not table_name.isidentifier():
              logger.warning("Invalid table name requested for sample: %s", table_name)
-             return f"Error: Invalid table name '{table_name}'."
+             raise InvalidInputError(f"Invalid table name '{table_name}'.")
         if not isinstance(limit, int) or limit <= 0:
             logger.warning("Invalid limit %s provided for table sample, defaulting to 10.", limit)
             limit = 10
@@ -141,9 +183,14 @@ def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
         logger.debug("Returning %d structured results for '%s'.", len(structured_results), table_name)
         return structured_results
 
+    except InvalidInputError:
+        raise # Propagate invalid input errors directly
+    except DatabaseConnectionError:
+        raise # Propagate connection errors directly
     except Exception as e:
-        logger.error("Error fetching sample data for table '%s': %s", table_name, e, exc_info=True)
-        return f"Error fetching sample data for table '{table_name}' from VAST DB: {e}"
+        # Assume other errors are query execution related for this function
+        logger.error("Error executing sample query for table '%s': %s", table_name, e, exc_info=True)
+        raise QueryExecutionError(f"Failed to execute sample query for table '{table_name}': {e}", original_exception=e)
     finally:
         if conn:
             try:
@@ -159,16 +206,25 @@ async def get_table_sample(table_name: str, limit: int = 10) -> QueryResult:
         Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
     """
     logger.info("Received request for table sample: table='%s', limit=%d", table_name, limit)
-    result = await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit)
-    return result
+    # Let exceptions propagate up
+    return await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit)
 
 def _execute_sql_sync(sql: str) -> QueryResult:
-    """Synchronous helper function to execute a SQL query and return list of dicts or error string."""
+    """Synchronous helper function to execute a SQL query and return list of dicts or error string.
+
+    Returns:
+        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
+
+    Raises:
+        InvalidInputError: If SQL query is not a SELECT query.
+        DatabaseConnectionError: If unable to establish database connection.
+        QueryExecutionError: If unable to execute query.
+    """
     logger.debug("Starting synchronous SQL execution: %s...", sql[:100])
     clean_sql = sql.strip().upper()
     if not clean_sql.startswith("SELECT"):
         logger.warning("Rejected non-SELECT query: %s...", sql[:100])
-        return "Error: Only SELECT queries are currently allowed for safety."
+        raise InvalidInputError("Only SELECT queries are currently allowed for safety.")
 
     conn = None
     try:
@@ -197,9 +253,13 @@ def _execute_sql_sync(sql: str) -> QueryResult:
         logger.debug("Returning %d structured results for SQL query.", len(structured_results))
         return structured_results
 
+    except InvalidInputError:
+        raise # Propagate invalid input errors directly
+    except DatabaseConnectionError:
+        raise # Propagate connection errors directly
     except Exception as e:
         logger.error("Error executing SQL query: %s", e, exc_info=True)
-        return f"Error executing SQL query in VAST DB: {e}"
+        raise QueryExecutionError(f"Error executing SQL query: {e}", original_exception=e)
     finally:
         if conn:
             try:
@@ -215,5 +275,5 @@ async def execute_sql_query(sql: str) -> QueryResult:
         Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
     """
     logger.info("Received request to execute SQL query: %s...", sql[:100])
-    result = await asyncio.to_thread(_execute_sql_sync, sql)
-    return result
+    # Let exceptions propagate up
+    return await asyncio.to_thread(_execute_sql_sync, sql)

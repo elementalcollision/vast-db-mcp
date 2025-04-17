@@ -5,6 +5,13 @@ from unittest.mock import patch, MagicMock
 # Import handlers to test
 from vast_mcp_server.resources import schema
 from vast_mcp_server.resources import table_data
+from vast_mcp_server.exceptions import (
+    DatabaseConnectionError,
+    SchemaFetchError,
+    QueryExecutionError,
+    InvalidInputError,
+    VastMcpError
+)
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
@@ -26,18 +33,30 @@ async def test_get_vast_schema_success(mock_get_db_schema):
     mock_get_db_schema.assert_called_once()
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_db_schema')
-async def test_get_vast_schema_error(mock_get_db_schema):
-    """Test error handling in schema resource handler."""
+async def test_get_vast_schema_db_error(mock_get_db_schema):
+    """Test formatted error message on DB error from db_ops."""
     # Arrange
-    test_exception = Exception("DB schema fetch failed")
-    mock_get_db_schema.side_effect = test_exception
+    db_exception = SchemaFetchError("Underlying DB error")
+    mock_get_db_schema.side_effect = db_exception
 
     # Act
     result = await schema.get_vast_schema()
 
     # Assert
-    expected_error_msg = f"Error retrieving VAST DB schema: {test_exception}"
+    expected_error_msg = f"ERROR: [SchemaFetchError] {db_exception}"
     assert result == expected_error_msg
+    mock_get_db_schema.assert_called_once()
+
+@patch('vast_mcp_server.vast_integration.db_ops.get_db_schema', side_effect=Exception("Unexpected!"))
+async def test_get_vast_schema_unexpected_error(mock_get_db_schema):
+    """Test formatted error message on unexpected error."""
+    # Arrange (exception set in patch)
+
+    # Act
+    result = await schema.get_vast_schema()
+
+    # Assert
+    assert result.startswith("ERROR: [UnexpectedError] An unexpected error occurred:")
     mock_get_db_schema.assert_called_once()
 
 # --- Tests for resources/table_data.py --- #
@@ -112,25 +131,47 @@ async def test_get_vast_table_sample_format_invalid(mock_get_table_sample):
     mock_get_table_sample.assert_called_once_with(table_name, limit)
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
-async def test_get_vast_table_sample_db_error_string(mock_get_table_sample):
-    """Test that DB error strings are passed through directly."""
+async def test_get_vast_table_sample_db_message_string(mock_get_table_sample):
+    """Test that DB message strings (like no data) are passed through."""
     # Arrange
-    table_name = "logs"
-    limit = 20
-    db_error_msg = "Error fetching sample data for table 'logs' from VAST DB: Some DB Error"
-    mock_get_table_sample.return_value = db_error_msg
+    table_name = "empty_table"
+    limit = 10
+    db_message = "-- No data found in table 'empty_table' or table does not exist. --"
+    mock_get_table_sample.return_value = db_message
 
     # Act
-    # Test both formats, error string should be the same
     result_csv = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="csv")
-    result_json = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="json")
+    # Check if JSON format wraps the message (optional behavior)
+    # result_json = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="json")
 
     # Assert
-    assert result_csv == db_error_msg
-    assert result_json == db_error_msg
-    # Called twice because we called the handler twice
-    assert mock_get_table_sample.call_count == 2
-    mock_get_table_sample.assert_called_with(table_name, limit)
+    assert result_csv == db_message
+    # assert json.loads(result_json) == {"message": db_message}
+    mock_get_table_sample.assert_called_once_with(table_name, limit)
+
+@pytest.mark.parametrize("format_type, expected_prefix, is_json", [
+    ("csv", "ERROR: [QueryExecutionError]", False),
+    ("json", '{"error": {"type": "QueryExecutionError", "message":', True)
+])
+@patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
+async def test_get_vast_table_sample_db_exception(mock_get_table_sample, format_type, expected_prefix, is_json):
+    """Test formatted error messages on DB exceptions."""
+    # Arrange
+    table_name = "bad_table"
+    limit = 5
+    db_exception = QueryExecutionError("DB query failed")
+    mock_get_table_sample.side_effect = db_exception
+
+    # Act
+    result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format=format_type)
+
+    # Assert
+    mock_get_table_sample.assert_called_once_with(table_name, limit)
+    assert str(result).startswith(expected_prefix)
+    if is_json:
+        try: json.loads(result) # Check if valid JSON
+        except json.JSONDecodeError: pytest.fail("Invalid JSON error response")
+    assert str(db_exception) in str(result)
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
 async def test_get_vast_table_sample_handler_exception(mock_get_table_sample):
@@ -138,18 +179,16 @@ async def test_get_vast_table_sample_handler_exception(mock_get_table_sample):
     # Arrange
     table_name = "data"
     limit = 5
-    handler_exception = Exception("Something broke during formatting")
+    format_type = "csv"
+    handler_exception = ValueError("Bad formatting logic")
+    mock_get_table_sample.return_value = [{'a': 1}] # DB call succeeds
 
-    # Mock db_ops call to succeed
-    mock_get_table_sample.return_value = [{'a': 1}]
-
-    # Patch the internal _format_results to raise an error
+    # Patch the internal _format_results
     with patch('vast_mcp_server.resources.table_data._format_results', side_effect=handler_exception):
         # Act
-        result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="csv")
+        result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format=format_type)
 
     # Assert
-    # The handler should catch its own exception and return a formatted error string
-    expected_error_msg = f"Error retrieving sample data for table '{table_name}': {handler_exception}"
+    expected_error_msg = f"ERROR: [{type(handler_exception).__name__}] {handler_exception}"
     assert result == expected_error_msg
     mock_get_table_sample.assert_called_once_with(table_name, limit) 
