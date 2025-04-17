@@ -4,9 +4,13 @@ import csv
 import io
 import logging # Import logging
 from .. import config  # Import configuration from the parent package
+from typing import List, Dict, Any, Union
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
+
+# Define a type alias for structured results or error messages
+QueryResult = Union[List[Dict[str, Any]], str]
 
 def create_vast_connection() -> vastdb.api.VastSession:
     """Creates and returns a VAST DB connection session.
@@ -102,8 +106,8 @@ async def get_db_schema() -> str:
     result = await asyncio.to_thread(_fetch_schema_sync)
     return result
 
-def _fetch_table_sample_sync(table_name: str, limit: int) -> str:
-    """Synchronous helper function to fetch and format table sample data."""
+def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
+    """Synchronous helper function to fetch table sample data as list of dicts or error string."""
     logger.debug("Starting synchronous table sample fetch for table '%s' limit %d.", table_name, limit)
     conn = None
     try:
@@ -120,12 +124,10 @@ def _fetch_table_sample_sync(table_name: str, limit: int) -> str:
             logger.warning("Invalid limit %s provided for table sample, defaulting to 10.", limit)
             limit = 10
 
-        # Execute query
         query = f"SELECT * FROM {table_name} LIMIT {limit}"
         logger.debug("Executing query: %s", query)
         cursor.execute(query)
 
-        # Fetch results and column names
         results = cursor.fetchall()
         column_names = [desc[0] for desc in cursor.description] if cursor.description else []
         logger.info("Fetched %d rows from table '%s' with columns: %s", len(results), table_name, column_names)
@@ -134,14 +136,10 @@ def _fetch_table_sample_sync(table_name: str, limit: int) -> str:
             logger.info("No data found in table '%s' for sample.", table_name)
             return f"-- No data found in table '{table_name}' or table does not exist. --"
 
-        # Format results as CSV string
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(column_names)
-        writer.writerows(results)
-        csv_output = output.getvalue()
-        logger.debug("Formatted sample data for '%s' as CSV string.", table_name)
-        return csv_output
+        # Convert results to list of dictionaries
+        structured_results = [dict(zip(column_names, row)) for row in results]
+        logger.debug("Returning %d structured results for '%s'.", len(structured_results), table_name)
+        return structured_results
 
     except Exception as e:
         logger.error("Error fetching sample data for table '%s': %s", table_name, e, exc_info=True)
@@ -154,24 +152,19 @@ def _fetch_table_sample_sync(table_name: str, limit: int) -> str:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def get_table_sample(table_name: str, limit: int = 10) -> str:
+async def get_table_sample(table_name: str, limit: int = 10) -> QueryResult:
     """Fetches a sample of data from a table asynchronously.
 
-    Args:
-        table_name (str): The name of the table.
-        limit (int): The maximum number of rows to fetch.
-
     Returns:
-        str: A string representation of the sample data (e.g., CSV).
+        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
     """
     logger.info("Received request for table sample: table='%s', limit=%d", table_name, limit)
     result = await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit)
     return result
 
-def _execute_sql_sync(sql: str) -> str:
-    """Synchronous helper function to execute a SQL query and format results."""
+def _execute_sql_sync(sql: str) -> QueryResult:
+    """Synchronous helper function to execute a SQL query and return list of dicts or error string."""
     logger.debug("Starting synchronous SQL execution: %s...", sql[:100])
-    # Security Check
     clean_sql = sql.strip().upper()
     if not clean_sql.startswith("SELECT"):
         logger.warning("Rejected non-SELECT query: %s...", sql[:100])
@@ -185,7 +178,7 @@ def _execute_sql_sync(sql: str) -> str:
         cursor = conn.cursor()
 
         logger.debug("Executing validated SQL query.")
-        cursor.execute(sql) # Execute original SQL, not uppercased version
+        cursor.execute(sql)
 
         if cursor.description is None:
             logger.info("SQL query executed, but no description/results returned.")
@@ -199,14 +192,10 @@ def _execute_sql_sync(sql: str) -> str:
             logger.info("SQL query returned no rows.")
             return "-- Query executed successfully, but returned no rows. --"
 
-        # Format results as CSV string
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(column_names)
-        writer.writerows(results)
-        csv_output = output.getvalue()
-        logger.debug("Formatted SQL query results as CSV string.")
-        return csv_output
+        # Convert results to list of dictionaries
+        structured_results = [dict(zip(column_names, row)) for row in results]
+        logger.debug("Returning %d structured results for SQL query.", len(structured_results))
+        return structured_results
 
     except Exception as e:
         logger.error("Error executing SQL query: %s", e, exc_info=True)
@@ -219,14 +208,11 @@ def _execute_sql_sync(sql: str) -> str:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def execute_sql_query(sql: str) -> str:
+async def execute_sql_query(sql: str) -> QueryResult:
     """Executes a read-only SQL query asynchronously.
 
-    Args:
-        sql (str): The SQL query to execute (must be SELECT).
-
     Returns:
-        str: A string representation of the query results (e.g., CSV) or an error message.
+        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
     """
     logger.info("Received request to execute SQL query: %s...", sql[:100])
     result = await asyncio.to_thread(_execute_sql_sync, sql)

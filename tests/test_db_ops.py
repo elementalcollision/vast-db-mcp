@@ -191,20 +191,23 @@ async def test_get_db_schema_connection_error(mocker):
 # --- Tests for get_table_sample --- #
 
 async def test_get_table_sample_success(mocker):
-    """Test successful table sample fetching."""
+    """Test successful table sample fetching returns list[dict]."""
     # Arrange
     table_name = "my_table"
     limit = 5
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
-    mock_cursor.description = [('id',), ('value',)] # Column names
-    mock_cursor.fetchall.return_value = [(1, 'abc'), (2, 'def')] # Data rows
+    mock_cursor.description = [('id',), ('value',)]
+    mock_cursor.fetchall.return_value = [(1, 'abc'), (2, 'def')]
 
     # Act
-    csv_output = await db_ops.get_table_sample(table_name, limit)
+    result = await db_ops.get_table_sample(table_name, limit)
 
     # Assert
-    expected_csv = "id,value\r\n1,abc\r\n2,def\r\n"
-    assert csv_output == expected_csv
+    expected_result = [
+        {'id': 1, 'value': 'abc'},
+        {'id': 2, 'value': 'def'}
+    ]
+    assert result == expected_result # Check for list[dict]
     mock_create_conn.assert_called_once()
     mock_cursor.execute.assert_called_once_with(f"SELECT * FROM {table_name} LIMIT {limit}")
     mock_conn.close.assert_called_once()
@@ -256,11 +259,12 @@ async def test_get_table_sample_invalid_limit_defaults_to_10(mocker, invalid_lim
     mock_cursor.fetchall.return_value = [(1,)]
 
     # Act
-    await db_ops.get_table_sample(table_name, invalid_limit)
+    result = await db_ops.get_table_sample(table_name, invalid_limit)
 
     # Assert
+    expected_result = [{'id': 1}]
+    assert result == expected_result # Check it still processed correctly
     mock_create_conn.assert_called_once()
-    # Check that execute was called with the default limit
     mock_cursor.execute.assert_called_once_with(f"SELECT * FROM {table_name} LIMIT {default_limit}")
     mock_conn.close.assert_called_once()
 
@@ -306,7 +310,7 @@ async def test_get_table_sample_connection_error(mocker):
 # --- Tests for execute_sql_query --- #
 
 async def test_execute_sql_query_success(mocker):
-    """Test successful execution of a SELECT query."""
+    """Test successful execution of a SELECT query returns list[dict]."""
     # Arrange
     sql = "SELECT id, name FROM users WHERE id = 1"
     mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
@@ -314,11 +318,11 @@ async def test_execute_sql_query_success(mocker):
     mock_cursor.fetchall.return_value = [(1, 'Alice')]
 
     # Act
-    csv_output = await db_ops.execute_sql_query(sql)
+    result = await db_ops.execute_sql_query(sql)
 
     # Assert
-    expected_csv = "id,name\r\n1,Alice\r\n"
-    assert csv_output == expected_csv
+    expected_result = [{'id': 1, 'name': 'Alice'}]
+    assert result == expected_result # Check for list[dict]
     mock_create_conn.assert_called_once()
     mock_cursor.execute.assert_called_once_with(sql)
     mock_conn.close.assert_called_once()
@@ -341,7 +345,8 @@ async def test_execute_sql_query_rejects_non_select(mocker, non_select_sql):
 
     # Assert
     assert output == "Error: Only SELECT queries are currently allowed for safety."
-    mock_create_conn.assert_not_called() # Should check before connecting
+    # Non-select check now happens *before* connection
+    mock_create_conn.assert_not_called()
     mock_cursor.execute.assert_not_called()
     mock_conn.close.assert_not_called()
 

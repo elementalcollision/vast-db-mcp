@@ -57,14 +57,19 @@ To provide a secure and structured way for AI models to query information (schem
     *   **URI:** `vast://schemas`
     *   **Description:** Returns a formatted string describing all discovered tables and their columns (name and type).
 *   **Resource: Table Sample Data**
-    *   **URI:** `vast://tables/{table_name}?limit=N`
-    *   **Description:** Returns a sample of data from the specified `table_name`. Uses the `limit` query parameter (defaults to 10) to control the number of rows.
-    *   **Format:** CSV string (including header row).
+    *   **URI:** `vast://tables/{table_name}?limit=N&format=FMT`
+    *   **Description:** Returns a sample of data from the specified `table_name`.
+    *   **Parameters:**
+        *   `limit` (integer, optional, default: 10): Maximum number of rows.
+        *   `format` (string, optional, default: `csv`): Output format (`csv` or `json`).
+    *   **Format:** CSV or JSON string (array of objects), including header row for CSV.
 *   **Tool: SQL Query Executor**
     *   **Name:** `vast_sql_query`
-    *   **Argument:** `sql` (string) - The SQL query to execute.
+    *   **Arguments:**
+        *   `sql` (string, required): The SQL query to execute.
+        *   `format` (string, optional, default: `csv`): Output format (`csv` or `json`).
     *   **Description:** Executes the provided SQL query against VAST DB.
-    *   **Format:** Returns results as a CSV string (including header row) or an error message.
+    *   **Format:** Returns results as a CSV or JSON string (array of objects) or an error message.
     *   **Safety:** Currently restricted to only allow `SELECT` statements.
 
 ## How to Run
@@ -109,7 +114,7 @@ This project uses `pytest` for unit testing.
 ## Potential Next Steps
 
 *   Implement robust logging.
-*   Add unit and integration tests.
+*   Add unit tests.
 *   Refine output formats (e.g., offer JSON alongside CSV).
 *   Enhance error handling and reporting.
 *   Add more granular resources/tools (e.g., list only tables, get table metadata).

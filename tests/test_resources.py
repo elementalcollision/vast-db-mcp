@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import patch, MagicMock
 
 # Import handlers to test
@@ -42,70 +43,113 @@ async def test_get_vast_schema_error(mock_get_db_schema):
 # --- Tests for resources/table_data.py --- #
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
-async def test_get_vast_table_sample_success_with_limit(mock_get_table_sample):
-    """Test successful call to table sample handler with explicit limit."""
+async def test_get_vast_table_sample_format_csv_default(mock_get_table_sample):
+    """Test CSV format is returned by default."""
     # Arrange
     table_name = "users"
-    limit = 5
-    expected_data = "id,name\r\n1,Alice\r\n"
-    mock_get_table_sample.return_value = expected_data
+    limit = 2
+    db_result = [{'id': 1, 'name': 'Alice'}, {'id': 2, 'name': 'Bob'}]
+    mock_get_table_sample.return_value = db_result
+    expected_csv = "id,name\r\n1,Alice\r\n2,Bob\r\n"
 
     # Act
     result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit)
 
     # Assert
-    assert result == expected_data
+    assert result == expected_csv
     mock_get_table_sample.assert_called_once_with(table_name, limit)
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
-async def test_get_vast_table_sample_success_default_limit(mock_get_table_sample):
-    """Test successful call to table sample handler with default limit."""
+async def test_get_vast_table_sample_format_csv_explicit(mock_get_table_sample):
+    """Test CSV format is returned when specified."""
     # Arrange
-    table_name = "products"
-    default_limit = 10 # Default limit defined in the handler
-    expected_data = "id,price\r\n1,9.99\r\n"
-    mock_get_table_sample.return_value = expected_data
+    table_name = "users"
+    limit = 2
+    db_result = [{'id': 1, 'name': 'Alice'}, {'id': 2, 'name': 'Bob'}]
+    mock_get_table_sample.return_value = db_result
+    expected_csv = "id,name\r\n1,Alice\r\n2,Bob\r\n"
 
     # Act
-    # Call without providing the limit parameter
-    result = await table_data.get_vast_table_sample(table_name=table_name)
+    result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="csv")
 
     # Assert
-    assert result == expected_data
-    # Verify it was called with the default limit
-    mock_get_table_sample.assert_called_once_with(table_name, default_limit)
+    assert result == expected_csv
+    mock_get_table_sample.assert_called_once_with(table_name, limit)
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
-async def test_get_vast_table_sample_success_invalid_limit(mock_get_table_sample):
-    """Test successful call to table sample handler with invalid limit (should default)."""
+async def test_get_vast_table_sample_format_json(mock_get_table_sample):
+    """Test JSON format is returned when specified."""
     # Arrange
-    table_name = "orders"
-    invalid_limit = -5
-    default_limit = 10
-    expected_data = "id,status\r\n1,shipped\r\n"
-    mock_get_table_sample.return_value = expected_data
+    table_name = "users"
+    limit = 2
+    db_result = [{'id': 1, 'name': 'Alice'}, {'id': 2, 'name': 'Bob'}]
+    mock_get_table_sample.return_value = db_result
+    # Use json.dumps to ensure exact formatting match (including indentation)
+    expected_json = json.dumps(db_result, indent=2)
 
     # Act
-    result = await table_data.get_vast_table_sample(table_name=table_name, limit=invalid_limit)
+    result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="json")
 
     # Assert
-    assert result == expected_data
-    # Verify it was called with the default limit, not the invalid one
-    mock_get_table_sample.assert_called_once_with(table_name, default_limit)
+    assert result == expected_json
+    mock_get_table_sample.assert_called_once_with(table_name, limit)
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
-async def test_get_vast_table_sample_error(mock_get_table_sample):
-    """Test error handling in table sample handler."""
+async def test_get_vast_table_sample_format_invalid(mock_get_table_sample):
+    """Test invalid format defaults to CSV."""
+    # Arrange
+    table_name = "users"
+    limit = 2
+    db_result = [{'id': 1, 'name': 'Alice'}]
+    mock_get_table_sample.return_value = db_result
+    expected_csv = "id,name\r\n1,Alice\r\n"
+
+    # Act
+    result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="xml") # Invalid format
+
+    # Assert
+    assert result == expected_csv
+    mock_get_table_sample.assert_called_once_with(table_name, limit)
+
+@patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
+async def test_get_vast_table_sample_db_error_string(mock_get_table_sample):
+    """Test that DB error strings are passed through directly."""
     # Arrange
     table_name = "logs"
     limit = 20
-    test_exception = Exception("DB table sample fetch failed")
-    mock_get_table_sample.side_effect = test_exception
+    db_error_msg = "Error fetching sample data for table 'logs' from VAST DB: Some DB Error"
+    mock_get_table_sample.return_value = db_error_msg
 
     # Act
-    result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit)
+    # Test both formats, error string should be the same
+    result_csv = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="csv")
+    result_json = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="json")
 
     # Assert
-    expected_error_msg = f"Error retrieving sample data for table '{table_name}': {test_exception}"
+    assert result_csv == db_error_msg
+    assert result_json == db_error_msg
+    # Called twice because we called the handler twice
+    assert mock_get_table_sample.call_count == 2
+    mock_get_table_sample.assert_called_with(table_name, limit)
+
+@patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
+async def test_get_vast_table_sample_handler_exception(mock_get_table_sample):
+    """Test error handling within the handler itself (after db call)."""
+    # Arrange
+    table_name = "data"
+    limit = 5
+    handler_exception = Exception("Something broke during formatting")
+
+    # Mock db_ops call to succeed
+    mock_get_table_sample.return_value = [{'a': 1}]
+
+    # Patch the internal _format_results to raise an error
+    with patch('vast_mcp_server.resources.table_data._format_results', side_effect=handler_exception):
+        # Act
+        result = await table_data.get_vast_table_sample(table_name=table_name, limit=limit, format="csv")
+
+    # Assert
+    # The handler should catch its own exception and return a formatted error string
+    expected_error_msg = f"Error retrieving sample data for table '{table_name}': {handler_exception}"
     assert result == expected_error_msg
     mock_get_table_sample.assert_called_once_with(table_name, limit) 
