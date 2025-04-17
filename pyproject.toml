@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vast-mcp-server"
+version = "0.1.0"
+description = "MCP Server for interacting with VAST DB"
+authors = [
+    { name = "Your Name", email = "you@example.com" }, # TODO: Update author info
+]
+license = "MIT" # Or your preferred license
+readme = "README.md"
+requires-python = ">=3.9" # MCP SDK might require newer Python versions
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # Update if license changes
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "mcp-sdk", # Assuming it's published under this name, might need adjustment
+    "vastdb", # Assuming it's published under this name, might need adjustment
+    "uvicorn[standard]",
+    "python-dotenv",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/your-repo/vast-mcp-server" # TODO: Update repository URL
+"Bug Tracker" = "https://github.com/your-repo/vast-mcp-server/issues" # TODO: Update repository URL
+
+# Optional: Configure development tools like linters, formatters
+[tool.hatch.build.targets.wheel]
+packages = ["src/vast_mcp_server"]
+
+[tool.ruff]
+# Add ruff configuration if desired
+line-length = 88
+select = ["E", "F", "W", "I"] # Example selections
+
+[tool.ruff.format]
+# Add formatter configuration if desired
+quote-style = "double"
