@@ -24,9 +24,17 @@ dependencies = [
     "python-dotenv",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio",
+    "pytest-mock",
+    # Add other test deps like httpx if needed for integration tests
+]
+
 [project.urls]
-"Homepage" = "https://github.com/your-repo/vast-mcp-server" # TODO: Update repository URL
-"Bug Tracker" = "https://github.com/your-repo/vast-mcp-server/issues" # TODO: Update repository URL
+"Homepage" = "https://github.com/elementalcollision/vast-db-mcp" # Updated repo URL
+"Bug Tracker" = "https://github.com/elementalcollision/vast-db-mcp/issues" # Updated repo URL
 
 # Optional: Configure development tools like linters, formatters
 [tool.hatch.build.targets.wheel]
@@ -40,3 +48,7 @@ select = ["E", "F", "W", "I"] # Example selections
 [tool.ruff.format]
 # Add formatter configuration if desired
 quote-style = "double"
+
+[tool.pytest.ini_options] # Basic pytest configuration
+pythonpath = ["src"]
+asyncio_mode = "auto"

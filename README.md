@@ -14,6 +14,7 @@ To provide a secure and structured way for AI models to query information (schem
 *   **ASGI Server:** `uvicorn`
 *   **MCP Implementation:** `FastMCP` from the `mcp-sdk`
 *   **Configuration:** `python-dotenv`
+*   **Testing:** `pytest`, `pytest-asyncio`, `pytest-mock`
 
 ## Project Structure
 
@@ -37,7 +38,11 @@ To provide a secure and structured way for AI models to query information (schem
 │       └── vast_integration/  # VAST DB interaction logic
 │           ├── __init__.py
 │           └── db_ops.py      # Connection & query execution (async wrappers)
-├── tests/                   # Placeholder for tests
+├── tests/                   # Pytest unit/integration tests
+│   ├── __init__.py
+│   ├── test_db_ops.py     # Tests for VAST DB interaction logic
+│   ├── test_resources.py  # Tests for MCP resource handlers
+│   └── test_tools.py      # Tests for MCP tool handlers
 ├── scripts/
 │   └── run_server.py        # Script to start the server via uvicorn
 ├── .gitignore
@@ -74,7 +79,7 @@ To provide a secure and structured way for AI models to query information (schem
     ```bash
     python -m venv .venv
     source .venv/bin/activate
-    # Install using pip or uv based on your preference
+    # Install core dependencies
     pip install -e .
     # or
     # uv pip install -e .
@@ -83,7 +88,23 @@ To provide a secure and structured way for AI models to query information (schem
     ```bash
     python scripts/run_server.py
     ```
-    The server will start (by default on `http://0.0.0.0:8088`) and listen for MCP connections. It will automatically reload if code in `src/vast_mcp_server` changes.
+    The server will start (by default on `http://0.0.0.0:8088`) and listen for MCP connections.
+
+## Testing
+
+This project uses `pytest` for unit testing.
+
+1.  **Install Test Dependencies:** Make sure you have installed the optional `test` dependencies.
+    ```bash
+    # If you installed with pip:
+    pip install -e '.[test]'
+    # If you installed with uv:
+    # uv pip install -e . --extras test
+    ```
+2.  **Run Tests:** Execute `pytest` from the project root directory.
+    ```bash
+    pytest
+    ```
 
 ## Potential Next Steps
 
@@ -94,3 +115,4 @@ To provide a secure and structured way for AI models to query information (schem
 *   Add more granular resources/tools (e.g., list only tables, get table metadata).
 *   Implement more sophisticated query validation/sandboxing for the `vast_sql_query` tool.
 *   Make query restrictions (e.g., allowing non-SELECT) configurable.
+*   Add integration tests that require a running VAST DB instance or mock server.
