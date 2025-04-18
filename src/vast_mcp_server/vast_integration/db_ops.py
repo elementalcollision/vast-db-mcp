@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 QueryResult = Union[List[Dict[str, Any]], str]
 # Define type alias for Schema info (always string for now)
 SchemaResult = str
+# Define type alias for structured Table Metadata
+TableMetadataResult = Dict[str, Any]
 
 def create_vast_connection() -> vastdb.api.VastSession:
     """Creates and returns a VAST DB connection session.
@@ -173,6 +175,87 @@ async def list_tables() -> List[str]:
     """
     logger.info("Received request to list tables.")
     return await asyncio.to_thread(_list_tables_sync)
+
+def _get_table_metadata_sync(table_name: str) -> TableMetadataResult:
+    """Synchronous helper to get metadata (columns, types) for a specific table.
+
+    Args:
+        table_name: The name of the table to describe.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing table metadata.
+            Currently includes 'table_name' and 'columns' (list of dicts with 'name' and 'type').
+
+    Raises:
+        InvalidInputError: If table name is invalid.
+        DatabaseConnectionError: If connection fails.
+        TableDescribeError: If DESCRIBE TABLE fails.
+    """
+    logger.debug("Starting synchronous metadata fetch for table '%s'.", table_name)
+    conn = None
+    try:
+        # Basic input validation
+        if not table_name.isidentifier():
+            logger.warning("Invalid table name requested for metadata: %s", table_name)
+            raise InvalidInputError(f"Invalid table name '{table_name}'.")
+
+        conn = create_vast_connection() # Can raise DatabaseConnectionError
+        cursor = conn.cursor()
+
+        logger.debug("Describing table: %s", table_name)
+        # Using DESCRIBE - adjust if needed for VAST DB
+        cursor.execute(f"DESCRIBE TABLE {table_name}")
+        columns_raw = cursor.fetchall()
+        if not columns_raw:
+            # This might happen if the table doesn't exist or has no columns (unlikely)
+            # DESCRIBE might raise an error before this point if table doesn't exist
+            logger.warning("DESCRIBE TABLE %s returned no columns.", table_name)
+            raise TableDescribeError(f"Could not retrieve column information for table '{table_name}' (table might not exist or is empty).")
+
+        # Assuming columns are (name, type, ...)
+        columns_metadata = [
+            {"name": col[0], "type": col[1]}
+            for col in columns_raw if col and len(col) >= 2
+        ]
+
+        metadata = {
+            "table_name": table_name,
+            "columns": columns_metadata
+            # Add more metadata here if discoverable (e.g., primary keys, indexes)
+        }
+        logger.info("Successfully described table '%s'. Found %d columns.", table_name, len(columns_metadata))
+        return metadata
+
+    except InvalidInputError:
+        raise # Propagate invalid input directly
+    except DatabaseConnectionError:
+        raise # Propagate connection errors directly
+    except Exception as e:
+        # Treat other exceptions during describe as TableDescribeError
+        logger.error("Error describing table '%s': %s", table_name, e, exc_info=True)
+        raise TableDescribeError(f"Failed to describe table '{table_name}': {e}", original_exception=e)
+    finally:
+        if conn:
+            try:
+                logger.debug("Closing VAST DB connection after metadata fetch.")
+                conn.close()
+            except Exception as close_e:
+                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
+
+async def get_table_metadata(table_name: str) -> TableMetadataResult:
+    """Fetches metadata for a specific table asynchronously.
+
+    Args:
+        table_name: The name of the table.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing table metadata.
+
+    Raises:
+        InvalidInputError, DatabaseConnectionError, TableDescribeError
+    """
+    logger.info("Received request for metadata for table: %s", table_name)
+    return await asyncio.to_thread(_get_table_metadata_sync, table_name)
 
 def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
     """Synchronous helper function to fetch table sample data as list of dicts or error string.

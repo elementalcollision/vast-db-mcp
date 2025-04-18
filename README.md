@@ -31,7 +31,8 @@ To provide a secure and structured way for AI models to query information (schem
 │       ├── resources/         # MCP Resource handlers
 │       │   ├── __init__.py
 │       │   ├── schema.py      # Handler for vast://schemas
-│       │   └── table_data.py  # Handler for vast://tables/{table_name}
+│       │   ├── table_data.py  # Handler for vast://tables/{table_name}
+│       │   └── metadata.py    # Handler for vast://metadata/tables/{table_name}
 │       ├── tools/             # MCP Tool handlers
 │       │   ├── __init__.py
 │       │   └── query.py       # Handler for vast_sql_query tool
@@ -63,7 +64,32 @@ To provide a secure and structured way for AI models to query information (schem
     *   **Parameters:**
         *   `format` (string, optional, default: `json`): Output format (`json` or `csv`/'list'). `csv` or `list` returns a newline-separated string.
     *   **Format:** JSON array of strings, or a newline-separated list.
-    *   **Error Handling:** Returns formatted error string (CSV: `ERROR: [ErrorType] Message`, JSON: `{"error": {"type": "ErrorType", "message": "Message"}}`).
+    *   **Error Handling:** Returns formatted error string (CSV: `ERROR: [ErrorType] Message`, JSON: `{\"error\": {\"type\": \"ErrorType\", \"message\": \"Message\"}}`).
+*   **Resource: Table Metadata**
+    *   **URI:** `vast://metadata/tables/{table_name}`
+    *   **Description:** Returns detailed metadata for a specific table, including column names and types.
+    *   **Format:** JSON object containing `table_name` (string) and `columns` (list of objects, each with `name` and `type` keys).
+    *   **Example Response:**
+        ```json
+        {
+          "table_name": "my_table",
+          "columns": [
+            {
+              "name": "id",
+              "type": "INTEGER"
+            },
+            {
+              "name": "data_column",
+              "type": "VARCHAR"
+            },
+            {
+              "name": "timestamp",
+              "type": "TIMESTAMP"
+            }
+          ]
+        }
+        ```
+    *   **Error Handling:** Returns a JSON object with an `error` key on failure (e.g., connection error, table not found, describe error). Returns `NOT_FOUND` status code if the table doesn't exist.
 *   **Resource: Table Sample Data**
     *   **URI:** `vast://tables/{table_name}?limit=N&format=FMT`
     *   **Description:** Returns a sample of data from the specified `table_name`.
@@ -91,43 +117,4 @@ To provide a secure and structured way for AI models to query information (schem
     # Edit .env with your details
     ```
 3.  **Install Dependencies:** Using a virtual environment is recommended.
-    ```bash
-    python -m venv .venv
-    source .venv/bin/activate
-    # Install core dependencies
-    pip install -e .
-    # or
-    # uv pip install -e .
     ```
-4.  **Run the Server:**
-    ```bash
-    python scripts/run_server.py
-    ```
-    The server will start (by default on `http://0.0.0.0:8088`) and listen for MCP connections.
-
-## Testing
-
-This project uses `pytest` for unit testing.
-
-1.  **Install Test Dependencies:** Make sure you have installed the optional `test` dependencies.
-    ```bash
-    # If you installed with pip:
-    pip install -e '.[test]'
-    # If you installed with uv:
-    # uv pip install -e . --extras test
-    ```
-2.  **Run Tests:** Execute `pytest` from the project root directory.
-    ```bash
-    pytest
-    ```
-
-## Potential Next Steps
-
-*   Implement robust logging. *(Done)*
-*   Add unit tests. *(Done)*
-*   Refine output formats (e.g., offer JSON alongside CSV). *(Done)*
-*   Enhance error handling and reporting. *(Done - basic custom exceptions and formatting)*
-*   Add more granular resources/tools (e.g., list only tables, get table metadata). *(Done - list tables)*
-*   Implement more sophisticated query validation/sandboxing for the `vast_sql_query` tool.
-*   Make query restrictions (e.g., allowing non-SELECT) configurable.
-*   Add integration tests that require a running VAST DB instance or mock server.

@@ -15,6 +15,7 @@ logger.info("Initializing VAST DB MCP Server...")
 logger.info("Importing and registering MCP resources and tools...")
 from .resources import schema       # Registers schema resource
 from .resources import table_data   # Registers table_data resource
+from .resources import metadata     # Registers metadata resource
 from .tools import query            # Registers query tool
 logger.info("MCP resources and tools registered.")
 
