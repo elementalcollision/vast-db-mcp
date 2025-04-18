@@ -570,29 +570,64 @@ async def test_get_table_sample_integration_invalid_input(client, mocker):
 
 @pytest.mark.asyncio
 async def test_get_table_metadata_success(client, mocker):
-    # ... (Arrange as before) ...
+    """Test successful enhanced metadata fetch."""
+    # Arrange
     table_name = "test_table"
     mock_conn = mocker.MagicMock()
     mock_cursor = mocker.MagicMock()
     mock_conn.cursor.return_value = mock_cursor
-    mock_cursor.fetchall.return_value = [('id', 'INTEGER'), ('name', 'VARCHAR')]
-    # Patch create_vast_connection directly if get_table_metadata uses it
+    # Simulate DESCRIBE TABLE results with richer info
+    mock_cursor.fetchall.return_value = [
+        ('id', 'INTEGER', 'NO', 'PRI', None, 'auto_increment'), # Not nullable, primary key
+        ('name', 'VARCHAR(100)', 'YES', '', '''Unknown''', ''), # Nullable, no key, default value 'Unknown'
+        ('ts', 'TIMESTAMP', 'YES', None, None, None) # Nullable, missing key/default/extra info from DB
+    ]
+
+    # Patch create_vast_connection as it's called by _get_table_metadata_sync
     mock_create_conn = mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection')
     mock_create_conn.return_value = mock_conn
-    # OR Patch the higher level function if preferred
-    # mock_get_metadata = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_table_metadata')
-    # mock_get_metadata.return_value = { ... expected dict ... }
 
     # Act
     response = await client.get(f"/vast/metadata/tables/{table_name}") # Uses default headers
 
     # Assert
-    # ... (Assert response as before) ...
     assert response.status_code == 200
-    # Check that create_vast_connection was called with the default headers
+    assert response.headers['content-type'] == "application/json"
+    expected_data = {
+        "table_name": table_name,
+        "columns": [
+            {
+                "name": "id",
+                "type": "INTEGER",
+                "is_nullable": "NO",
+                "key": "PRI",
+                "default": None,
+                # "extra": "auto_increment" # We didn't parse index 5 yet
+            },
+            {
+                "name": "name",
+                "type": "VARCHAR(100)",
+                "is_nullable": "YES",
+                "key": "",
+                "default": "'Unknown'",
+                # "extra": ""
+            },
+            {
+                "name": "ts",
+                "type": "TIMESTAMP",
+                "is_nullable": "YES",
+                "key": None, # Parsed as None because index 3 was missing
+                "default": None, # Parsed as None because index 4 was missing
+                # "extra": None
+            }
+        ]
+    }
+    assert response.json() == expected_data
+    # Check create_vast_connection was called correctly
     mock_create_conn.assert_called_once_with('test-access-key', 'test-secret-key')
-    # OR check the higher-level function call
-    # mock_get_metadata.assert_called_once_with(table_name, 'test-access-key', 'test-secret-key')
+    # Check DESCRIBE was executed
+    mock_cursor.execute.assert_called_once_with(f"DESCRIBE TABLE {table_name}")
+    mock_conn.close.assert_called_once()
 
 @pytest.mark.asyncio
 async def test_get_table_metadata_missing_headers(client):

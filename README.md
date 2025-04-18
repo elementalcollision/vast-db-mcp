@@ -73,24 +73,33 @@ Failure to provide these headers, or providing invalid credentials, will result 
     *   **Error Handling:** Returns an `McpResponse` with an error status code (`UNAUTHENTICATED`, `BAD_REQUEST`, `SERVICE_UNAVAILABLE`, `INTERNAL_SERVER_ERROR`) and a formatted error body (JSON or plain text based on `format`).
 *   **Resource: Table Metadata**
     *   **URI:** `vast://metadata/tables/{table_name}`
-    *   **Description:** Returns detailed metadata for a specific table, including column names and types. Requires authentication headers.
-    *   **Format:** JSON object containing `table_name` (string) and `columns` (list of objects, each with `name` and `type` keys).
-    *   **Example Response:**
+    *   **Description:** Returns detailed metadata for a specific table. Requires authentication headers. Attempts to include column name, data type, nullability (`is_nullable`: e.g., 'YES'/'NO'), key information (`key`: e.g., 'PRI'), and default value (`default`). Fields beyond name/type might be `null` if not available from the database introspection.
+    *   **Format:** JSON object containing `table_name` (string) and `columns` (list of objects, each potentially with `name`, `type`, `is_nullable`, `key`, `default` keys).
+    *   **Example Response (Enhanced):**
         ```json
         {
           "table_name": "my_table",
           "columns": [
             {
               "name": "id",
-              "type": "INTEGER"
+              "type": "INTEGER",
+              "is_nullable": "NO",
+              "key": "PRI",
+              "default": null
             },
             {
               "name": "data_column",
-              "type": "VARCHAR"
+              "type": "VARCHAR",
+              "is_nullable": "YES",
+              "key": "",
+              "default": "'Default Text'"
             },
             {
               "name": "timestamp",
-              "type": "TIMESTAMP"
+              "type": "TIMESTAMP",
+              "is_nullable": "YES",
+              "key": null,
+              "default": null
             }
           ]
         }

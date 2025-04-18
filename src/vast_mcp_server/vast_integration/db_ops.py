@@ -192,25 +192,36 @@ def _get_table_metadata_sync(table_name: str, access_key: str, secret_key: str) 
         cursor = conn.cursor()
 
         logger.debug("Describing table: %s", table_name)
-        # Using DESCRIBE - adjust if needed for VAST DB
         cursor.execute(f"DESCRIBE TABLE {table_name}")
         columns_raw = cursor.fetchall()
         if not columns_raw:
-            # This might happen if the table doesn't exist or has no columns (unlikely)
-            # DESCRIBE might raise an error before this point if table doesn't exist
             logger.warning("DESCRIBE TABLE %s returned no columns.", table_name)
             raise TableDescribeError(f"Could not retrieve column information for table '{table_name}' (table might not exist or is empty).")
 
-        # Assuming columns are (name, type, ...)
-        columns_metadata = [
-            {"name": col[0], "type": col[1]}
-            for col in columns_raw if col and len(col) >= 2
-        ]
+        # Attempt to parse more details from DESCRIBE output
+        # Assuming format: (name, type, nullable, key, default, extra)
+        # Adjust indices based on actual VAST DB output if known
+        columns_metadata = []
+        for col in columns_raw:
+            if not col or len(col) < 2:
+                continue # Skip malformed rows
+            
+            col_meta = {
+                "name": col[0],
+                "type": col[1],
+                # Attempt to parse optional fields gracefully
+                "is_nullable": col[2] if len(col) > 2 else None, # e.g., 'YES'/'NO' or True/False?
+                "key": col[3] if len(col) > 3 else None,       # e.g., 'PRI', 'UNI', 'MUL'
+                "default": col[4] if len(col) > 4 else None,   # Default value as string or None
+                # "extra": col[5] if len(col) > 5 else None    # e.g., 'auto_increment'
+            }
+            # Clean up potential None values if desired, or keep them explicitly
+            # col_meta = {k: v for k, v in col_meta.items() if v is not None}
+            columns_metadata.append(col_meta)
 
         metadata = {
             "table_name": table_name,
             "columns": columns_metadata
-            # Add more metadata here if discoverable (e.g., primary keys, indexes)
         }
         logger.info("Successfully described table '%s'. Found %d columns.", table_name, len(columns_metadata))
         return metadata
