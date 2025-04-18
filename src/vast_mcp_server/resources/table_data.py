@@ -5,10 +5,11 @@ import io
 from typing import Optional, List, Dict, Any, Union
 
 from mcp_core.mcp_response import McpResponse, StatusCode # Needed for error responses
-from ..server import mcp_app
+from ..server import mcp_app, limiter # Import limiter
 from ..vast_integration import db_ops
 from ..exceptions import VastMcpError, InvalidInputError, DatabaseConnectionError
-from .. import utils # Import the new utils module
+from .. import utils, config # Import config
+from starlette.requests import Request # Import Request
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +50,17 @@ def _format_error(e: Exception, format_type: str) -> str:
         return f"ERROR: [{error_type}] {message}"
 
 @mcp_app.resource("vast://tables")
-async def list_vast_tables(format: str = "json", headers: dict = None) -> McpResponse:
+@limiter.limit(config.DEFAULT_RATE_LIMIT)
+async def list_vast_tables(request: Request, format: str = "json", headers: dict = None) -> McpResponse:
     """Provides a list of available tables in the VAST DB.
 
     Requires X-Vast-Access-Key and X-Vast-Secret-Key headers.
     """
-    # Validate format param early
+    # Request argument is automatically passed by Starlette/FastMCP
     format_type = format.lower() if format.lower() in ["json", "csv", "list"] else "json"
-    if format_type == "list": format_type = "csv" # Treat list as csv internally
+    if format_type == "list": format_type = "csv"
 
-    logger.info("MCP Resource request: vast://tables?format=%s", format_type)
+    logger.info("MCP Resource request: vast://tables?format=%s from %s", format_type, request.client.host)
 
     try:
         # Use the utility function
@@ -81,25 +83,18 @@ async def list_vast_tables(format: str = "json", headers: dict = None) -> McpRes
         return _format_error(e, format_type)
 
 @mcp_app.resource("vast://tables/{table_name}")
-async def get_vast_table_sample(table_name: str, limit: Optional[int] = 10, format: str = "csv") -> str:
+@limiter.limit(config.DEFAULT_RATE_LIMIT)
+async def get_vast_table_sample(request: Request, table_name: str, limit: Optional[int] = 10, format: str = "csv", headers: dict = None) -> McpResponse:
     """Provides a sample of data from a specified VAST DB table.
 
-    Args:
-        table_name: The name of the table, extracted from the resource path.
-        limit: The maximum number of rows to return (default 10), from query param.
-        format: The desired output format ('csv' or 'json'), from query param.
-
-    Returns:
-        A string containing the sample data in the specified format, or an error message.
+    Requires X-Vast-Access-Key and X-Vast-Secret-Key headers.
     """
+    # Request argument is automatically passed by Starlette/FastMCP
     effective_limit = limit if limit is not None and limit > 0 else 10
     format_type = format.lower() if format.lower() in ["csv", "json"] else "csv"
     logger.info(
-        "MCP Resource request received for: vast://tables/%s?limit=%d&format=%s (effective_limit=%d)",
-        table_name,
-        limit if limit is not None else -1,
-        format_type,
-        effective_limit
+        "MCP Resource request: vast://tables/%s?limit=%d&format=%s (effective_limit=%d) from %s",
+        table_name, limit if limit is not None else -1, format_type, effective_limit, request.client.host
     )
 
     try:

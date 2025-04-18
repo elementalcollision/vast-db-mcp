@@ -18,6 +18,9 @@ VAST_SECRET_KEY = os.getenv("VAST_SECRET_KEY", "<your-secret-key>")         # Re
 _allowed_types_str = os.getenv("MCP_ALLOWED_SQL_TYPES", "SELECT")
 ALLOWED_SQL_TYPES = [stmt_type.strip().upper() for stmt_type in _allowed_types_str.split(',') if stmt_type.strip()]
 
+# Default Rate Limit (slowapi format string)
+DEFAULT_RATE_LIMIT = os.getenv("MCP_DEFAULT_RATE_LIMIT", "10/minute")
+
 # --- Optional Configuration ---
 # Add other configuration variables as needed, e.g.:
 # DEFAULT_QUERY_LIMIT = 100

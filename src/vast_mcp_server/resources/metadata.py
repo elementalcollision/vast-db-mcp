@@ -5,7 +5,9 @@ from mcp_core.resource import Resource
 from mcp_core.mcp_response import McpResponse, StatusCode
 from ..vast_integration import db_ops
 from ..exceptions import VastMcpError, InvalidInputError, TableDescribeError, DatabaseConnectionError
-from .. import utils # Import the new utils module
+from .. import utils, config # Import config
+from ..server import limiter # Import limiter
+from starlette.requests import Request # Import Request
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 # --- Resource Handler ---
 
+# Note: Applying limiter directly to the class might be possible depending on FastMCP
+# but applying to the method is generally safer with Starlette conventions.
+# @limiter.limit(config.DEFAULT_RATE_LIMIT)
 class TableMetadataResource(Resource):
     """
     MCP Resource handler for fetching metadata of a specific VAST DB table.
@@ -32,10 +37,11 @@ class TableMetadataResource(Resource):
             len(parsed_uri.path.strip('/').split('/')) == 2 # e.g., 'tables/my_table'
         )
 
-    async def get(self, uri: str, headers: dict = None) -> McpResponse:
+    @limiter.limit(config.DEFAULT_RATE_LIMIT) # Apply limit to GET method
+    async def get(self, request: Request, uri: str, headers: dict = None) -> McpResponse:
         """Handles GET requests for table metadata."""
+        # Request argument is automatically passed by Starlette/FastMCP
         try:
-            # Use the utility function
             access_key, secret_key = utils.extract_auth_headers(headers)
         except ValueError as e:
             logger.warning("Authentication header error for %s: %s", uri, e)

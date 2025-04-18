@@ -3,11 +3,12 @@ import json
 import csv
 import io
 from typing import List, Dict, Any
-from ..server import mcp_app  # Import the FastMCP instance
+from ..server import mcp_app, limiter  # Import the FastMCP instance and limiter
 from ..vast_integration import db_ops  # Import the db operations module
 from ..exceptions import VastMcpError, InvalidInputError, DatabaseConnectionError # Import relevant custom errors
-from .. import utils # Import the new utils module
+from .. import utils, config  # Import the new utils module and config
 from mcp_core.mcp_response import McpResponse, StatusCode # Tools don't typically return McpResponse
+from starlette.requests import Request  # Import Request
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -46,13 +47,15 @@ def _format_error(e: Exception, format_type: str) -> str:
         return f"ERROR: [{error_type}] {message}"
 
 @mcp_app.tool()
-async def vast_sql_query(sql: str, format: str = "csv", headers: dict = None) -> str:
+@limiter.limit(config.DEFAULT_RATE_LIMIT)  # Apply rate limit
+async def vast_sql_query(request: Request, sql: str, format: str = "csv", headers: dict = None) -> str:
     """Executes a SQL query against the VAST database using provided credentials.
 
     Requires X-Vast-Access-Key and X-Vast-Secret-Key in the 'headers' argument.
     Allowed SQL statement types are controlled by the MCP_ALLOWED_SQL_TYPES environment variable.
 
     Args:
+        request: The incoming request object (for rate limiting).
         sql: The SQL query to execute.
         format: The desired output format ('csv' or 'json'). Defaults to 'csv'.
         headers: A dictionary containing request headers, including authentication.
@@ -63,7 +66,8 @@ async def vast_sql_query(sql: str, format: str = "csv", headers: dict = None) ->
     sql_snippet = sql[:200] + ("..." if len(sql) > 200 else "")
     format_type = format.lower() if format.lower() in ["csv", "json"] else "csv"
     logger.info(
-        "MCP Tool request: vast_sql_query(format='%s', sql='%s')", format_type, sql_snippet
+        "MCP Tool request: vast_sql_query(format='%s', sql='%s') from %s", 
+        format_type, sql_snippet, request.client.host
     )
 
     try:

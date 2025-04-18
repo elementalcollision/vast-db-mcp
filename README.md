@@ -14,7 +14,8 @@ To provide a secure and structured way for AI models to query information (schem
 *   **ASGI Server:** `uvicorn`
 *   **MCP Implementation:** `FastMCP` from the `mcp-sdk`
 *   **Configuration:** `python-dotenv`
-*   **Testing:** `pytest`, `pytest-asyncio`, `pytest-mock`
+*   **Testing:** `pytest`, `pytest-asyncio`, `pytest-mock`, `httpx`
+*   **Rate Limiting:** `slowapi`
 
 ## Project Structure
 
@@ -59,6 +60,8 @@ To provide a secure and structured way for AI models to query information (schem
 *   `X-Vast-Access-Key`: Your VAST DB access key.
 *   `X-Vast-Secret-Key`: Your VAST DB secret key.
 Failure to provide these headers, or providing invalid credentials, will result in an `UNAUTHENTICATED` (401) error response.
+
+**Rate Limiting:** All resource and tool handlers are rate-limited based on the client IP address. The default limit is configurable via the `MCP_DEFAULT_RATE_LIMIT` environment variable (e.g., "10/minute", see `.env.example`). Exceeding the limit will result in a `429 Too Many Requests` error.
 
 *   **Resource: Database Schema**
     *   **URI:** `vast://schemas`
@@ -167,6 +170,7 @@ When integrating this MCP server with an AI agent framework (e.g., LangChain, Ll
 *   Add integration tests that require a running VAST DB instance or mock server. *(Done - Added ASGI/mocked tests for all current resources/tools)*
 *   Consider adding authentication/authorization layer if needed. *(Done - Header-based authentication)*
 *   Refactor shared code (e.g., `extract_auth_headers`, formatters) into `utils.py`. *(Done)*
+*   Implement Rate Limiting. *(Done - IP-based via slowapi on handlers)*
 
 ## How to Run
 

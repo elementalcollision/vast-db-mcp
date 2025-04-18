@@ -1,22 +1,25 @@
 import logging
 import json
 from mcp_core.mcp_response import McpResponse, StatusCode # Needed for error responses
-from ..server import mcp_app  # Import the FastMCP instance
+from ..server import mcp_app, limiter # Import limiter
 from ..vast_integration import db_ops  # Import the db operations module
 from ..exceptions import VastMcpError, DatabaseConnectionError # Import base custom error
-from .. import utils # Import the new utils module
+from .. import utils, config # Import config
+from starlette.requests import Request # Import Request
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
 @mcp_app.resource("vast://schemas")
-async def get_vast_schema(headers: dict = None) -> McpResponse:
+@limiter.limit(config.DEFAULT_RATE_LIMIT) # Apply rate limit
+async def get_vast_schema(request: Request, headers: dict = None) -> McpResponse:
     """Provides the VAST DB schema as a resource.
 
     Fetches table names and column definitions from the connected VAST DB.
     Requires X-Vast-Access-Key and X-Vast-Secret-Key headers.
     """
-    logger.info("MCP Resource request received for: vast://schemas")
+    # Request argument is automatically passed by Starlette/FastMCP
+    logger.info("MCP Resource request received for: vast://schemas from %s", request.client.host)
     try:
         # Use the utility function
         access_key, secret_key = utils.extract_auth_headers(headers)

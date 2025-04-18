@@ -23,6 +23,7 @@ dependencies = [
     "uvicorn[standard]",
     "python-dotenv",
     "sqlparse", # Added for query validation
+    "slowapi", # Added for rate limiting
 ]
 
 [project.optional-dependencies]
