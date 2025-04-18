@@ -2,7 +2,7 @@ import logging
 import json
 import csv
 import io
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 from ..server import mcp_app
 from ..vast_integration import db_ops
@@ -10,26 +10,30 @@ from ..exceptions import VastMcpError, InvalidInputError
 
 logger = logging.getLogger(__name__)
 
-def _format_results(data: List[Dict[str, Any]], format_type: str) -> str:
-    """Formats structured data into CSV or JSON string."""
+def _format_results(data: Union[List[Dict[str, Any]], List[str]], format_type: str) -> str:
+    """Formats structured data (list of dicts or list of strings) into CSV or JSON string."""
     if not data:
         return "[]" if format_type == "json" else ""
 
     if format_type == "json":
         try:
-            # Use indent for readability, maybe configurable later
             return json.dumps(data, indent=2)
         except TypeError as e:
             logger.error("JSON serialization error: %s", e, exc_info=True)
             return f'{{"error": "Failed to serialize results to JSON: {e}"}}'
-    else: # Default to CSV
+    else: # CSV or plain list
         output = io.StringIO()
         if data:
-            # Use the keys from the first dictionary as header
-            headers = data[0].keys()
-            writer = csv.DictWriter(output, fieldnames=headers)
-            writer.writeheader()
-            writer.writerows(data)
+            if isinstance(data[0], dict):
+                # List of Dicts -> CSV
+                headers = data[0].keys()
+                writer = csv.DictWriter(output, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(data)
+            else:
+                # Assume List of Strings -> simple newline separated
+                for item in data:
+                    output.write(str(item) + '\n')
         return output.getvalue()
 
 def _format_error(e: Exception, format_type: str) -> str:
@@ -41,6 +45,35 @@ def _format_error(e: Exception, format_type: str) -> str:
         return json.dumps(error_obj)
     else:
         return f"ERROR: [{error_type}] {message}"
+
+@mcp_app.resource("vast://tables")
+async def list_vast_tables(format: str = "json") -> str:
+    """Provides a list of available tables in the VAST DB.
+
+    Args:
+        format: The desired output format ('json' or 'csv'/'list'). Defaults to 'json'.
+                'csv'/'list' will return a newline-separated list.
+
+    Returns:
+        A JSON array of table names or a newline-separated list, or an error message.
+    """
+    # Default to JSON for table list, allow 'csv' to mean simple list
+    format_type = format.lower() if format.lower() in ["json", "csv", "list"] else "json"
+    if format_type == "list": format_type = "csv" # Treat list as csv internally for formatter
+
+    logger.info("MCP Resource request: vast://tables?format=%s", format_type)
+    try:
+        table_names = await db_ops.list_tables() # Returns List[str]
+        logger.debug("Table list request successful, formatting as %s.", format_type)
+        # Use the same formatter, it handles list of strings for csv/list
+        return _format_results(table_names, format_type)
+
+    except VastMcpError as e:
+        logger.error("Database error handling vast://tables: %s", e, exc_info=True)
+        return _format_error(e, format_type)
+    except Exception as e:
+        logger.exception("Unexpected error handling vast://tables: %s", e)
+        return _format_error(e, format_type)
 
 @mcp_app.resource("vast://tables/{table_name}")
 async def get_vast_table_sample(table_name: str, limit: Optional[int] = 10, format: str = "csv") -> str:

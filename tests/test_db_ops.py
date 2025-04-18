@@ -310,6 +310,73 @@ async def test_get_table_sample_connection_error_raises(mocker):
     mock_create_conn.assert_called_once()
 
 
+# --- Tests for list_tables --- #
+
+async def test_list_tables_success(mocker):
+    """Test successful fetching of table list."""
+    # Arrange
+    mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
+    mock_cursor.fetchall.return_value = [('table1',), ('table_two',), (None,), ('table3',)]
+
+    # Act
+    result = await db_ops.list_tables()
+
+    # Assert
+    expected_result = ['table1', 'table_two', 'table3']
+    assert result == expected_result
+    mock_create_conn.assert_called_once()
+    mock_cursor.execute.assert_called_once_with("SHOW TABLES")
+    mock_conn.close.assert_called_once()
+
+async def test_list_tables_empty(mocker):
+    """Test fetching table list when database has no tables."""
+    # Arrange
+    mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
+    mock_cursor.fetchall.return_value = []
+
+    # Act
+    result = await db_ops.list_tables()
+
+    # Assert
+    assert result == []
+    mock_create_conn.assert_called_once()
+    mock_cursor.execute.assert_called_once_with("SHOW TABLES")
+    mock_conn.close.assert_called_once()
+
+async def test_list_tables_execution_error_raises(mocker):
+    """Test error during SHOW TABLES raises QueryExecutionError."""
+    # Arrange
+    mock_create_conn, mock_conn, mock_cursor = _get_mock_conn_cursor(mocker)
+    original_exception = Exception("SHOW TABLES not allowed")
+    mock_cursor.execute.side_effect = original_exception
+
+    # Act & Assert
+    with pytest.raises(QueryExecutionError) as excinfo:
+        await db_ops.list_tables()
+
+    assert "Failed to list tables" in str(excinfo.value)
+    assert excinfo.value.original_exception is original_exception
+    mock_create_conn.assert_called_once()
+    mock_cursor.execute.assert_called_once_with("SHOW TABLES")
+    mock_conn.close.assert_called_once()
+
+async def test_list_tables_connection_error_raises(mocker):
+    """Test connection error raises DatabaseConnectionError."""
+    # Arrange
+    conn_exception = DatabaseConnectionError("No route to host")
+    mock_create_conn = mocker.patch(
+        'vast_mcp_server.vast_integration.db_ops.create_vast_connection',
+        side_effect=conn_exception
+    )
+
+    # Act & Assert
+    with pytest.raises(DatabaseConnectionError) as excinfo:
+        await db_ops.list_tables()
+
+    assert excinfo.value is conn_exception
+    mock_create_conn.assert_called_once()
+
+
 # --- Tests for execute_sql_query --- #
 
 async def test_execute_sql_query_success(mocker):

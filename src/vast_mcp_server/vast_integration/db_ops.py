@@ -139,6 +139,41 @@ async def get_db_schema() -> SchemaResult:
     # Let exceptions propagate up to the handler
     return await asyncio.to_thread(_fetch_schema_sync)
 
+def _list_tables_sync() -> List[str]:
+    """Synchronous helper to fetch table names.
+    Raises: DatabaseConnectionError, QueryExecutionError
+    """
+    logger.debug("Starting synchronous table list fetch.")
+    conn = None
+    try:
+        conn = create_vast_connection() # Can raise DatabaseConnectionError
+        cursor = conn.cursor()
+        logger.debug("Executing SHOW TABLES")
+        cursor.execute("SHOW TABLES")
+        tables = cursor.fetchall()
+        table_names = [t[0] for t in tables if t]
+        logger.info("Found %d tables: %s", len(table_names), table_names)
+        return table_names
+    except DatabaseConnectionError:
+        raise
+    except Exception as e:
+        logger.error("Error executing SHOW TABLES: %s", e, exc_info=True)
+        raise QueryExecutionError(f"Failed to list tables: {e}", original_exception=e)
+    finally:
+        if conn:
+            try:
+                logger.debug("Closing VAST DB connection after listing tables.")
+                conn.close()
+            except Exception as close_e:
+                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
+
+async def list_tables() -> List[str]:
+    """Fetches a list of table names asynchronously.
+    Raises: DatabaseConnectionError, QueryExecutionError
+    """
+    logger.info("Received request to list tables.")
+    return await asyncio.to_thread(_list_tables_sync)
+
 def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
     """Synchronous helper function to fetch table sample data as list of dicts or error string.
 

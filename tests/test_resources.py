@@ -59,6 +59,75 @@ async def test_get_vast_schema_unexpected_error(mock_get_db_schema):
     assert result.startswith("ERROR: [UnexpectedError] An unexpected error occurred:")
     mock_get_db_schema.assert_called_once()
 
+# --- Tests for resources/table_data.py: list_vast_tables --- #
+
+@patch('vast_mcp_server.vast_integration.db_ops.list_tables')
+async def test_list_vast_tables_success_json_default(mock_list_tables):
+    """Test successful table listing returns JSON by default."""
+    # Arrange
+    db_result = ["table1", "table2"]
+    mock_list_tables.return_value = db_result
+    expected_json = json.dumps(db_result, indent=2)
+
+    # Act
+    result = await table_data.list_vast_tables()
+
+    # Assert
+    assert result == expected_json
+    mock_list_tables.assert_called_once()
+
+@patch('vast_mcp_server.vast_integration.db_ops.list_tables')
+async def test_list_vast_tables_success_csv_list(mock_list_tables):
+    """Test successful table listing returns list format when format=csv."""
+    # Arrange
+    db_result = ["table1", "table2"]
+    mock_list_tables.return_value = db_result
+    expected_list_str = "table1\ntable2\n"
+
+    # Act
+    result = await table_data.list_vast_tables(format="csv")
+
+    # Assert
+    assert result == expected_list_str
+    mock_list_tables.assert_called_once()
+
+@patch('vast_mcp_server.vast_integration.db_ops.list_tables')
+async def test_list_vast_tables_empty(mock_list_tables):
+    """Test empty table list returns empty JSON array."""
+    # Arrange
+    db_result = []
+    mock_list_tables.return_value = db_result
+    expected_json = "[]"
+
+    # Act
+    result = await table_data.list_vast_tables()
+
+    # Assert
+    assert result == expected_json
+    mock_list_tables.assert_called_once()
+
+@pytest.mark.parametrize("format_type, expected_prefix, is_json", [
+    ("json", '{"error": {"type": "QueryExecutionError", "message":', True),
+    ("csv", "ERROR: [QueryExecutionError]", False),
+])
+@patch('vast_mcp_server.vast_integration.db_ops.list_tables')
+async def test_list_vast_tables_db_error(mock_list_tables, format_type, expected_prefix, is_json):
+    """Test formatted error message on DB exception when listing tables."""
+    # Arrange
+    db_exception = QueryExecutionError("Cannot show tables")
+    mock_list_tables.side_effect = db_exception
+
+    # Act
+    result = await table_data.list_vast_tables(format=format_type)
+
+    # Assert
+    mock_list_tables.assert_called_once()
+    assert str(result).startswith(expected_prefix)
+    if is_json:
+        try: json.loads(result)
+        except json.JSONDecodeError: pytest.fail("Invalid JSON error response")
+    assert str(db_exception) in str(result)
+
 # --- Tests for resources/table_data.py --- #
 
 @patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')

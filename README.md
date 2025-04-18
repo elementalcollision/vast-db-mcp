@@ -57,6 +57,13 @@ To provide a secure and structured way for AI models to query information (schem
     *   **URI:** `vast://schemas`
     *   **Description:** Returns a formatted string describing all discovered tables and their columns (name and type). Partial results may be returned if describing some tables fails.
     *   **Error Handling:** Returns `ERROR: [ErrorType] Message` on failure (e.g., connection error, general schema fetch error).
+*   **Resource: List Tables**
+    *   **URI:** `vast://tables?format=FMT`
+    *   **Description:** Returns a list of available table names.
+    *   **Parameters:**
+        *   `format` (string, optional, default: `json`): Output format (`json` or `csv`/'list'). `csv` or `list` returns a newline-separated string.
+    *   **Format:** JSON array of strings, or a newline-separated list.
+    *   **Error Handling:** Returns formatted error string (CSV: `ERROR: [ErrorType] Message`, JSON: `{"error": {"type": "ErrorType", "message": "Message"}}`).
 *   **Resource: Table Sample Data**
     *   **URI:** `vast://tables/{table_name}?limit=N&format=FMT`
     *   **Description:** Returns a sample of data from the specified `table_name`.
@@ -120,7 +127,7 @@ This project uses `pytest` for unit testing.
 *   Add unit tests. *(Done)*
 *   Refine output formats (e.g., offer JSON alongside CSV). *(Done)*
 *   Enhance error handling and reporting. *(Done - basic custom exceptions and formatting)*
-*   Add more granular resources/tools (e.g., list only tables, get table metadata).
+*   Add more granular resources/tools (e.g., list only tables, get table metadata). *(Done - list tables)*
 *   Implement more sophisticated query validation/sandboxing for the `vast_sql_query` tool.
 *   Make query restrictions (e.g., allowing non-SELECT) configurable.
 *   Add integration tests that require a running VAST DB instance or mock server.
