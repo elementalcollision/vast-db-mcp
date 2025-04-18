@@ -26,28 +26,38 @@ SchemaResult = str
 # Define type alias for structured Table Metadata
 TableMetadataResult = Dict[str, Any]
 
-def create_vast_connection() -> vastdb.api.VastSession:
-    """Creates and returns a VAST DB connection session.
+def create_vast_connection(access_key: str, secret_key: str) -> vastdb.api.VastSession:
+    """Creates and returns a VAST DB connection session using provided credentials.
 
-    Uses connection details defined in the config module.
+    Uses the endpoint from config, but requires access/secret keys.
+
+    Args:
+        access_key: The VAST DB access key.
+        secret_key: The VAST DB secret key.
 
     Returns:
         vastdb.api.VastSession: An active VAST DB session.
 
     Raises:
         DatabaseConnectionError: If connection fails.
+        ValueError: If keys are missing.
     """
-    logger.debug("Attempting to connect to VAST DB at %s", config.VAST_DB_ENDPOINT)
+    if not access_key or not secret_key:
+        logger.error("Missing VAST DB access key or secret key for connection.")
+        raise ValueError("Access key and secret key are required.")
+
+    # Endpoint still comes from config, but keys are passed in
+    endpoint = config.VAST_DB_ENDPOINT
+    logger.debug("Attempting to connect to VAST DB at %s with provided keys.", endpoint)
     try:
-        # Assuming vastdb.connect uses these parameters.
         # Adjust based on the actual VAST DB SDK's connect function signature.
         conn = vastdb.connect(
-            endpoint=config.VAST_DB_ENDPOINT,
-            access_key=config.VAST_ACCESS_KEY,
-            secret_key=config.VAST_SECRET_KEY,
+            endpoint=endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
             # Add any other necessary connection parameters here, e.g., verify_ssl=False
         )
-        logger.info("Successfully connected to VAST DB.") # Optional: for debugging
+        logger.info("Successfully connected to VAST DB.")
         return conn
     except Exception as e:
         logger.error("Connection to VAST DB failed: %s", e, exc_info=True)
@@ -57,7 +67,7 @@ def create_vast_connection() -> vastdb.api.VastSession:
 
 # --- Database Operations ---
 
-def _fetch_schema_sync() -> SchemaResult:
+def _fetch_schema_sync(access_key: str, secret_key: str) -> SchemaResult:
     """Synchronous helper function to fetch and format schema.
 
     Returns:
@@ -71,7 +81,7 @@ def _fetch_schema_sync() -> SchemaResult:
     logger.debug("Starting synchronous schema fetch.")
     conn = None
     try:
-        conn = create_vast_connection()
+        conn = create_vast_connection(access_key, secret_key)
         if not conn: # Connection might have failed and raised in create_vast_connection
              return "Error: Failed to establish database connection for schema fetch."
         cursor = conn.cursor()
@@ -132,24 +142,17 @@ def _fetch_schema_sync() -> SchemaResult:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def get_db_schema() -> SchemaResult:
-    """Fetches the database schema asynchronously.
-
-    Returns:
-        str: A string representation of the schema.
-    """
+async def get_db_schema(access_key: str, secret_key: str) -> SchemaResult:
+    """Fetches the database schema asynchronously using provided credentials."""
     logger.info("Received request to fetch DB schema.")
-    # Let exceptions propagate up to the handler
-    return await asyncio.to_thread(_fetch_schema_sync)
+    return await asyncio.to_thread(_fetch_schema_sync, access_key, secret_key)
 
-def _list_tables_sync() -> List[str]:
-    """Synchronous helper to fetch table names.
-    Raises: DatabaseConnectionError, QueryExecutionError
-    """
+def _list_tables_sync(access_key: str, secret_key: str) -> List[str]:
+    """Synchronous helper to fetch table names using provided credentials."""
     logger.debug("Starting synchronous table list fetch.")
     conn = None
     try:
-        conn = create_vast_connection() # Can raise DatabaseConnectionError
+        conn = create_vast_connection(access_key, secret_key) # Use provided keys
         cursor = conn.cursor()
         logger.debug("Executing SHOW TABLES")
         cursor.execute("SHOW TABLES")
@@ -170,28 +173,13 @@ def _list_tables_sync() -> List[str]:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def list_tables() -> List[str]:
-    """Fetches a list of table names asynchronously.
-    Raises: DatabaseConnectionError, QueryExecutionError
-    """
+async def list_tables(access_key: str, secret_key: str) -> List[str]:
+    """Fetches a list of table names asynchronously using provided credentials."""
     logger.info("Received request to list tables.")
-    return await asyncio.to_thread(_list_tables_sync)
+    return await asyncio.to_thread(_list_tables_sync, access_key, secret_key)
 
-def _get_table_metadata_sync(table_name: str) -> TableMetadataResult:
-    """Synchronous helper to get metadata (columns, types) for a specific table.
-
-    Args:
-        table_name: The name of the table to describe.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing table metadata.
-            Currently includes 'table_name' and 'columns' (list of dicts with 'name' and 'type').
-
-    Raises:
-        InvalidInputError: If table name is invalid.
-        DatabaseConnectionError: If connection fails.
-        TableDescribeError: If DESCRIBE TABLE fails.
-    """
+def _get_table_metadata_sync(table_name: str, access_key: str, secret_key: str) -> TableMetadataResult:
+    """Synchronous helper to get metadata for a specific table using provided credentials."""
     logger.debug("Starting synchronous metadata fetch for table '%s'.", table_name)
     conn = None
     try:
@@ -200,7 +188,7 @@ def _get_table_metadata_sync(table_name: str) -> TableMetadataResult:
             logger.warning("Invalid table name requested for metadata: %s", table_name)
             raise InvalidInputError(f"Invalid table name '{table_name}'.")
 
-        conn = create_vast_connection() # Can raise DatabaseConnectionError
+        conn = create_vast_connection(access_key, secret_key) # Use provided keys
         cursor = conn.cursor()
 
         logger.debug("Describing table: %s", table_name)
@@ -243,36 +231,17 @@ def _get_table_metadata_sync(table_name: str) -> TableMetadataResult:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def get_table_metadata(table_name: str) -> TableMetadataResult:
-    """Fetches metadata for a specific table asynchronously.
-
-    Args:
-        table_name: The name of the table.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing table metadata.
-
-    Raises:
-        InvalidInputError, DatabaseConnectionError, TableDescribeError
-    """
+async def get_table_metadata(table_name: str, access_key: str, secret_key: str) -> TableMetadataResult:
+    """Fetches metadata for a specific table asynchronously using provided credentials."""
     logger.info("Received request for metadata for table: %s", table_name)
-    return await asyncio.to_thread(_get_table_metadata_sync, table_name)
+    return await asyncio.to_thread(_get_table_metadata_sync, table_name, access_key, secret_key)
 
-def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
-    """Synchronous helper function to fetch table sample data as list of dicts or error string.
-
-    Returns:
-        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
-
-    Raises:
-        InvalidInputError: If table name is invalid.
-        DatabaseConnectionError: If unable to establish database connection.
-        QueryExecutionError: If unable to execute query.
-    """
+def _fetch_table_sample_sync(table_name: str, limit: int, access_key: str, secret_key: str) -> QueryResult:
+    """Synchronous helper function to fetch table sample data using provided credentials."""
     logger.debug("Starting synchronous table sample fetch for table '%s' limit %d.", table_name, limit)
     conn = None
     try:
-        conn = create_vast_connection()
+        conn = create_vast_connection(access_key, secret_key) # Use provided keys
         if not conn:
             return "Error: Failed to establish database connection for table sample fetch."
         cursor = conn.cursor()
@@ -318,27 +287,13 @@ def _fetch_table_sample_sync(table_name: str, limit: int) -> QueryResult:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def get_table_sample(table_name: str, limit: int = 10) -> QueryResult:
-    """Fetches a sample of data from a table asynchronously.
-
-    Returns:
-        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
-    """
+async def get_table_sample(table_name: str, limit: int, access_key: str, secret_key: str) -> QueryResult:
+    """Fetches a sample of data from a table asynchronously using provided credentials."""
     logger.info("Received request for table sample: table='%s', limit=%d", table_name, limit)
-    # Let exceptions propagate up
-    return await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit)
+    return await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit, access_key, secret_key)
 
-def _execute_sql_sync(sql: str) -> QueryResult:
-    """Synchronous helper function to execute a SQL query and return list of dicts or error string.
-
-    Returns:
-        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
-
-    Raises:
-        InvalidInputError: If SQL query is not a SELECT query (by default).
-        DatabaseConnectionError: If unable to establish database connection.
-        QueryExecutionError: If unable to execute query.
-    """
+def _execute_sql_sync(sql: str, access_key: str, secret_key: str) -> QueryResult:
+    """Synchronous helper function to execute SQL query using provided credentials."""
     logger.debug("Starting synchronous SQL execution: %s...", sql[:100])
 
     # --- Query Validation using sqlparse ---
@@ -379,7 +334,7 @@ def _execute_sql_sync(sql: str) -> QueryResult:
 
     conn = None
     try:
-        conn = create_vast_connection()
+        conn = create_vast_connection(access_key, secret_key) # Use provided keys
         if not conn:
             # This condition might be less likely if create_vast_connection raises reliably
             logger.error("Failed to establish database connection for SQL execution (conn is None).")
@@ -426,12 +381,7 @@ def _execute_sql_sync(sql: str) -> QueryResult:
             except Exception as close_e:
                 logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
 
-async def execute_sql_query(sql: str) -> QueryResult:
-    """Executes a read-only SQL query asynchronously.
-
-    Returns:
-        Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
-    """
+async def execute_sql_query(sql: str, access_key: str, secret_key: str) -> QueryResult:
+    """Executes a SQL query asynchronously using provided credentials."""
     logger.info("Received request to execute SQL query: %s...", sql[:100])
-    # Let exceptions propagate up
-    return await asyncio.to_thread(_execute_sql_sync, sql)
+    return await asyncio.to_thread(_execute_sql_sync, sql, access_key, secret_key)

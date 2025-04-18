@@ -4,9 +4,11 @@ import csv
 import io
 from typing import Optional, List, Dict, Any, Union
 
+from mcp_core.mcp_response import McpResponse, StatusCode # Needed for error responses
 from ..server import mcp_app
 from ..vast_integration import db_ops
-from ..exceptions import VastMcpError, InvalidInputError
+from ..exceptions import VastMcpError, InvalidInputError, DatabaseConnectionError
+from .. import utils # Import the new utils module
 
 logger = logging.getLogger(__name__)
 
@@ -47,23 +49,26 @@ def _format_error(e: Exception, format_type: str) -> str:
         return f"ERROR: [{error_type}] {message}"
 
 @mcp_app.resource("vast://tables")
-async def list_vast_tables(format: str = "json") -> str:
+async def list_vast_tables(format: str = "json", headers: dict = None) -> McpResponse:
     """Provides a list of available tables in the VAST DB.
 
-    Args:
-        format: The desired output format ('json' or 'csv'/'list'). Defaults to 'json'.
-                'csv'/'list' will return a newline-separated list.
-
-    Returns:
-        A JSON array of table names or a newline-separated list, or an error message.
+    Requires X-Vast-Access-Key and X-Vast-Secret-Key headers.
     """
-    # Default to JSON for table list, allow 'csv' to mean simple list
+    # Validate format param early
     format_type = format.lower() if format.lower() in ["json", "csv", "list"] else "json"
-    if format_type == "list": format_type = "csv" # Treat list as csv internally for formatter
+    if format_type == "list": format_type = "csv" # Treat list as csv internally
 
     logger.info("MCP Resource request: vast://tables?format=%s", format_type)
+
     try:
-        table_names = await db_ops.list_tables() # Returns List[str]
+        # Use the utility function
+        access_key, secret_key = utils.extract_auth_headers(headers)
+    except ValueError as e:
+        logger.warning("Authentication header error for vast://tables: %s", e)
+        return _format_error_response(e, format_type, StatusCode.UNAUTHENTICATED)
+
+    try:
+        table_names = await db_ops.list_tables(access_key, secret_key)
         logger.debug("Table list request successful, formatting as %s.", format_type)
         # Use the same formatter, it handles list of strings for csv/list
         return _format_results(table_names, format_type)

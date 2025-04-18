@@ -5,7 +5,9 @@ import io
 from typing import List, Dict, Any
 from ..server import mcp_app  # Import the FastMCP instance
 from ..vast_integration import db_ops  # Import the db operations module
-from ..exceptions import VastMcpError, InvalidInputError # Import relevant custom errors
+from ..exceptions import VastMcpError, InvalidInputError, DatabaseConnectionError # Import relevant custom errors
+from .. import utils # Import the new utils module
+from mcp_core.mcp_response import McpResponse, StatusCode # Tools don't typically return McpResponse
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -44,27 +46,37 @@ def _format_error(e: Exception, format_type: str) -> str:
         return f"ERROR: [{error_type}] {message}"
 
 @mcp_app.tool()
-async def vast_sql_query(sql: str, format: str = "csv") -> str:
-    """Executes a read-only (SELECT) SQL query against the VAST database.
+async def vast_sql_query(sql: str, format: str = "csv", headers: dict = None) -> str:
+    """Executes a SQL query against the VAST database using provided credentials.
+
+    Requires X-Vast-Access-Key and X-Vast-Secret-Key in the 'headers' argument.
+    Allowed SQL statement types are controlled by the MCP_ALLOWED_SQL_TYPES environment variable.
 
     Args:
-        sql: The SELECT SQL query to execute.
+        sql: The SQL query to execute.
         format: The desired output format ('csv' or 'json'). Defaults to 'csv'.
+        headers: A dictionary containing request headers, including authentication.
 
     Returns:
-        A string containing the query results in the specified format, or an error message.
+        A string containing the query results or an error message, formatted as requested.
     """
     sql_snippet = sql[:200] + ("..." if len(sql) > 200 else "")
     format_type = format.lower() if format.lower() in ["csv", "json"] else "csv"
     logger.info(
-        "MCP Tool request: vast_sql_query(format='%s', sql='%s')",
-        format_type,
-        sql_snippet
+        "MCP Tool request: vast_sql_query(format='%s', sql='%s')", format_type, sql_snippet
     )
 
     try:
-        # db_ops now returns List[Dict] or str (message) or raises VastMcpError
-        result_data = await db_ops.execute_sql_query(sql)
+        # Use the utility function
+        access_key, secret_key = utils.extract_auth_headers(headers)
+    except ValueError as e:
+        logger.warning("Authentication header error for vast_sql_query: %s", e)
+        # Format the auth error according to the requested format
+        return _format_error(e, format_type)
+
+    try:
+        # Pass credentials to db_ops function
+        result_data = await db_ops.execute_sql_query(sql, access_key, secret_key)
 
         if isinstance(result_data, str):
             # It's an informational message (e.g., "-- No data found --")
