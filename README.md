@@ -31,8 +31,7 @@ To provide a secure and structured way for AI models to query information (schem
 │       ├── resources/         # MCP Resource handlers
 │       │   ├── __init__.py
 │       │   ├── schema.py      # Handler for vast://schemas
-│       │   ├── table_data.py  # Handler for vast://tables/{table_name}
-│       │   └── metadata.py    # Handler for vast://metadata/tables/{table_name}
+│       │   └── table_data.py  # Handler for vast://tables/{table_name}
 │       ├── tools/             # MCP Tool handlers
 │       │   ├── __init__.py
 │       │   └── query.py       # Handler for vast_sql_query tool
@@ -117,4 +116,45 @@ To provide a secure and structured way for AI models to query information (schem
     # Edit .env with your details
     ```
 3.  **Install Dependencies:** Using a virtual environment is recommended.
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate
+    # Install core dependencies
+    pip install -e .
+    # or
+    # uv pip install -e .
     ```
+4.  **Run the Server:**
+    ```bash
+    python scripts/run_server.py
+    ```
+    The server will start (by default on `http://0.0.0.0:8088`) and listen for MCP connections.
+
+## Testing
+
+This project uses `pytest` for unit testing.
+
+1.  **Install Test Dependencies:** Make sure you have installed the optional `test` dependencies.
+    ```bash
+    # If you installed with pip:
+    pip install -e '.[test]'
+    # If you installed with uv:
+    # uv pip install -e . --extras test
+    ```
+2.  **Run Tests:** Execute `pytest` from the project root directory.
+    ```bash
+    pytest
+    ```
+
+## Potential Next Steps
+
+*   Implement robust logging. *(Done)*
+*   Add unit tests. *(Done)*
+*   Refine output formats (e.g., offer JSON alongside CSV). *(Done)*
+*   Enhance error handling and reporting. *(Done - basic custom exceptions and formatting)*
+*   Add more granular resources/tools (e.g., list only tables, get table metadata). *(Done - list tables, table metadata)*
+*   Implement more sophisticated query validation/sandboxing for the `vast_sql_query` tool. *(Done - using sqlparse)*
+*   Make query restrictions (e.g., allowing non-SELECT) configurable. *(Done - via MCP_ALLOWED_SQL_TYPES env var)*
+*   Add integration tests that require a running VAST DB instance or mock server. *(Partially done - added ASGI/mocked tests for metadata resource)*
+*   Add integration tests for other resources/tools (schema, table_data, query tool).
+*   Consider adding authentication/authorization layer if needed.

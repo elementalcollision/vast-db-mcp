@@ -3,6 +3,7 @@ import asyncio
 import csv
 import io
 import logging # Import logging
+import sqlparse # Added for query validation
 from .. import config  # Import configuration from the parent package
 from typing import List, Dict, Any, Union
 # Import custom exceptions
@@ -334,37 +335,74 @@ def _execute_sql_sync(sql: str) -> QueryResult:
         Union[List[Dict[str, Any]], str]: List of dicts on success, error/message string otherwise.
 
     Raises:
-        InvalidInputError: If SQL query is not a SELECT query.
+        InvalidInputError: If SQL query is not a SELECT query (by default).
         DatabaseConnectionError: If unable to establish database connection.
         QueryExecutionError: If unable to execute query.
     """
     logger.debug("Starting synchronous SQL execution: %s...", sql[:100])
-    clean_sql = sql.strip().upper()
-    if not clean_sql.startswith("SELECT"):
-        logger.warning("Rejected non-SELECT query: %s...", sql[:100])
-        raise InvalidInputError("Only SELECT queries are currently allowed for safety.")
+
+    # --- Query Validation using sqlparse ---
+    try:
+        # Parse the SQL. sqlparse returns a list of statements.
+        parsed_statements = sqlparse.parse(sql)
+
+        # Check if parsing produced anything meaningful
+        if not parsed_statements:
+            logger.warning("SQL parsing resulted in an empty statement list: %s", sql)
+            raise InvalidInputError("Invalid or empty SQL query provided.")
+
+        # For now, we only support a single statement per request
+        if len(parsed_statements) > 1:
+            logger.warning("Rejected multi-statement SQL query: %s...", sql[:100])
+            raise InvalidInputError("Multi-statement SQL queries are not allowed.")
+
+        statement = parsed_statements[0]
+        statement_type = statement.get_type()
+
+        # Allow only configured statement types
+        allowed_types = config.ALLOWED_SQL_TYPES
+        if statement_type not in allowed_types:
+            logger.warning("Rejected non-allowed query type '%s': %s...", statement_type, sql[:100])
+            # Dynamically generate the error message based on configured allowed types
+            allowed_str = ", ".join(allowed_types)
+            raise InvalidInputError(f"Query type '{statement_type}' is not allowed. Allowed types: {allowed_str}.")
+
+        logger.debug("SQL query validated as type: %s (Allowed: %s)", statement_type, ", ".join(allowed_types))
+
+    except InvalidInputError:
+        raise # Re-raise our specific validation errors
+    except Exception as parse_e:
+        # Catch potential errors during parsing itself
+        logger.error("Error parsing SQL query: %s", parse_e, exc_info=True)
+        raise InvalidInputError(f"Failed to parse SQL query: {parse_e}")
+    # --- End Query Validation ---
 
     conn = None
     try:
         conn = create_vast_connection()
         if not conn:
-            return "Error: Failed to establish database connection for SQL query execution."
+            # This condition might be less likely if create_vast_connection raises reliably
+            logger.error("Failed to establish database connection for SQL execution (conn is None).")
+            raise DatabaseConnectionError("Failed to establish database connection.")
+
         cursor = conn.cursor()
 
         logger.debug("Executing validated SQL query.")
-        cursor.execute(sql)
+        cursor.execute(sql) # Execute the original, validated SQL
 
+        # Check if the query was meant to return results (e.g., SELECT)
         if cursor.description is None:
-            logger.info("SQL query executed, but no description/results returned.")
-            return "-- Query executed, but no results returned (or not a SELECT query). --"
+            logger.info("SQL query executed, but did not return results (e.g., non-SELECT or empty result).")
+            # Check if it was a SELECT that genuinely returned nothing vs. another type (though we block others)
+            if statement_type == 'SELECT':
+                return "-- Query executed successfully, but returned no rows. --"
+            else:
+                # This path shouldn't be reached with current validation, but good practice
+                return "-- Query executed, but it was not a type that returns rows. --"
 
         results = cursor.fetchall()
         column_names = [desc[0] for desc in cursor.description]
         logger.info("SQL query returned %d rows with columns: %s", len(results), column_names)
-
-        if not results:
-            logger.info("SQL query returned no rows.")
-            return "-- Query executed successfully, but returned no rows. --"
 
         # Convert results to list of dictionaries
         structured_results = [dict(zip(column_names, row)) for row in results]
@@ -372,11 +410,13 @@ def _execute_sql_sync(sql: str) -> QueryResult:
         return structured_results
 
     except InvalidInputError:
-        raise # Propagate invalid input errors directly
+        raise # Propagate our own validation errors
     except DatabaseConnectionError:
-        raise # Propagate connection errors directly
+        raise # Propagate connection errors
     except Exception as e:
-        logger.error("Error executing SQL query: %s", e, exc_info=True)
+        # Catch errors during VAST DB execution (e.g., syntax errors VAST finds)
+        logger.error("Error executing SQL query in VAST DB: %s", e, exc_info=True)
+        # Map VAST DB execution errors to QueryExecutionError
         raise QueryExecutionError(f"Error executing SQL query: {e}", original_exception=e)
     finally:
         if conn:

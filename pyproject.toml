@@ -22,6 +22,7 @@ dependencies = [
     "vastdb", # Assuming it's published under this name, might need adjustment
     "uvicorn[standard]",
     "python-dotenv",
+    "sqlparse", # Added for query validation
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ test = [
     "pytest>=7.0",
     "pytest-asyncio",
     "pytest-mock",
+    "httpx", # Added for ASGI testing
     # Add other test deps like httpx if needed for integration tests
 ]
 

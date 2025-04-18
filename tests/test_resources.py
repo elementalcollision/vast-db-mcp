@@ -1,13 +1,18 @@
 import pytest
 import json
 from unittest.mock import patch, MagicMock
+import httpx # Added for ASGI testing
 
-# Import handlers to test
-from vast_mcp_server.resources import schema
-from vast_mcp_server.resources import table_data
+# Import the app instance
+from vast_mcp_server.server import mcp_app
+# Import resource handlers directly (optional, can test through app)
+# from vast_mcp_server.resources import schema
+# from vast_mcp_server.resources import table_data
+# from vast_mcp_server.resources import metadata # Import new handler
 from vast_mcp_server.exceptions import (
     DatabaseConnectionError,
     SchemaFetchError,
+    TableDescribeError, # Added
     QueryExecutionError,
     InvalidInputError,
     VastMcpError
@@ -15,6 +20,12 @@ from vast_mcp_server.exceptions import (
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
+
+# --- Fixture for Async Test Client ---
+@pytest.fixture
+async def client():
+    async with httpx.AsyncClient(app=mcp_app, base_url="http://test") as client:
+        yield client
 
 # --- Tests for resources/schema.py --- #
 
@@ -260,4 +271,164 @@ async def test_get_vast_table_sample_handler_exception(mock_get_table_sample):
     # Assert
     expected_error_msg = f"ERROR: [{type(handler_exception).__name__}] {handler_exception}"
     assert result == expected_error_msg
-    mock_get_table_sample.assert_called_once_with(table_name, limit) 
+    mock_get_table_sample.assert_called_once_with(table_name, limit)
+
+# --- Integration Tests for resources/metadata.py ---
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_success(client, mocker):
+    """Test successful metadata fetch via vast://metadata/tables/{table_name}"""
+    # Arrange
+    table_name = "test_table"
+    mock_conn = mocker.MagicMock()
+    mock_cursor = mocker.MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    # Simulate DESCRIBE TABLE results
+    mock_cursor.fetchall.return_value = [
+        ('id', 'INTEGER', 'nullable', 'pk'), # Example tuple format
+        ('name', 'VARCHAR(100)', 'not nullable', None),
+        ('ts', 'TIMESTAMP', None, None)
+    ]
+
+    # Patch db_ops.create_vast_connection
+    mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection', return_value=mock_conn)
+
+    # Act
+    response = await client.get(f"/vast/metadata/tables/{table_name}")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.headers['content-type'] == "application/json"
+    expected_data = {
+        "table_name": table_name,
+        "columns": [
+            {"name": "id", "type": "INTEGER"},
+            {"name": "name", "type": "VARCHAR(100)"},
+            {"name": "ts", "type": "TIMESTAMP"}
+        ]
+    }
+    assert response.json() == expected_data
+    mock_cursor.execute.assert_called_once_with(f"DESCRIBE TABLE {table_name}")
+    mock_conn.close.assert_called_once() # Check connection closed
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_not_found(client, mocker):
+    """Test 404 when DESCRIBE fails indicating table not found."""
+    # Arrange
+    table_name = "nonexistent_table"
+    mock_conn = mocker.MagicMock()
+    mock_cursor = mocker.MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    # Simulate DESCRIBE failing because table doesn't exist
+    describe_error = Exception("Table 'nonexistent_table' does not exist") # Example VAST error
+    mock_cursor.execute.side_effect = TableDescribeError(str(describe_error), original_exception=describe_error)
+
+    # Patch db_ops.create_vast_connection
+    mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection', return_value=mock_conn)
+
+    # Act
+    response = await client.get(f"/vast/metadata/tables/{table_name}")
+
+    # Assert
+    assert response.status_code == 404 # NOT_FOUND maps to 404
+    assert response.headers['content-type'] == "application/json"
+    assert response.json()["error"] == f"Table '{table_name}' not found or metadata unavailable."
+    mock_cursor.execute.assert_called_once_with(f"DESCRIBE TABLE {table_name}")
+    mock_conn.close.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_connection_error(client, mocker):
+    """Test 503 on database connection error."""
+    # Arrange
+    table_name = "any_table"
+    # Patch create_vast_connection to raise an error
+    connection_error = DatabaseConnectionError("Cannot connect to DB")
+    mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection', side_effect=connection_error)
+
+    # Act
+    response = await client.get(f"/vast/metadata/tables/{table_name}")
+
+    # Assert
+    assert response.status_code == 503 # SERVICE_UNAVAILABLE maps to 503
+    assert response.headers['content-type'] == "application/json"
+    assert response.json() == {"error": "Database connection error"}
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_invalid_input(client, mocker):
+    """Test 400 for invalid table name format."""
+    # Arrange
+    table_name = "invalid-table-name!"
+    # Mock connection just to ensure it's not called
+    mock_create_connection = mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection')
+
+    # Act
+    response = await client.get(f"/vast/metadata/tables/{table_name}")
+
+    # Assert
+    assert response.status_code == 400 # BAD_REQUEST maps to 400
+    assert response.headers['content-type'] == "application/json"
+    assert "Invalid input: Invalid table name" in response.json()["error"]
+    mock_create_connection.assert_not_called() # DB connection shouldn't be attempted
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_other_describe_error(client, mocker):
+    """Test 500 for unexpected errors during DESCRIBE."""
+    # Arrange
+    table_name = "problem_table"
+    mock_conn = mocker.MagicMock()
+    mock_cursor = mocker.MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    # Simulate DESCRIBE failing for some other reason
+    describe_error = Exception("Some internal VAST error")
+    mock_cursor.execute.side_effect = TableDescribeError(str(describe_error), original_exception=describe_error)
+
+    # Patch db_ops.create_vast_connection
+    mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection', return_value=mock_conn)
+
+    # Act
+    response = await client.get(f"/vast/metadata/tables/{table_name}")
+
+    # Assert
+    assert response.status_code == 500 # INTERNAL_SERVER_ERROR maps to 500
+    assert response.headers['content-type'] == "application/json"
+    assert response.json()["error"] == f"Failed to retrieve metadata for table '{table_name}'."
+    assert str(describe_error) in response.json()["details"]
+    mock_cursor.execute.assert_called_once_with(f"DESCRIBE TABLE {table_name}")
+    mock_conn.close.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_invalid_uri_format(client):
+    """Test 400 for incorrect URI path format."""
+    # Arrange (No mocking needed as URI parsing happens before DB interaction)
+
+    # Act
+    response = await client.get("/vast/metadata/wrong/{table_name}") # Invalid path
+
+    # Assert
+    assert response.status_code == 400
+    assert response.headers['content-type'] == "application/json"
+    assert "Invalid URI format" in response.json()["error"]
+
+# --- End Tests for resources/metadata.py ---
+
+# --- Existing Tests for resources/schema.py and table_data.py ---
+# (These existing unit tests can remain, they test the handler logic directly)
+
+# ... (Paste existing tests from the original file here) ...
+
+# (Need to ensure the original tests are copied back in)
+
+# Example (replace with actual original tests):
+@patch('vast_mcp_server.vast_integration.db_ops.get_db_schema')
+async def test_get_vast_schema_success_original(mock_get_db_schema):
+    """Test successful call to schema resource handler."""
+    # Arrange
+    expected_schema = "TABLE: table1\n  - col1 (INT)\n\n"
+    mock_get_db_schema.return_value = expected_schema
+    # Act
+    result = await schema.get_vast_schema() # Assumes schema.py has this function
+    # Assert
+    assert result == expected_schema
+    mock_get_db_schema.assert_called_once()
+
+# ... (Add all other original tests back) ... 
