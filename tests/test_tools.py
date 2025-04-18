@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 # Import handler to test
 from vast_mcp_server.tools import query
+from vast_mcp_server import config # Import config to allow mocking
 # Import custom exceptions to mock them being raised
 from vast_mcp_server.exceptions import (
     QueryExecutionError,
@@ -14,7 +15,85 @@ from vast_mcp_server.exceptions import (
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
 
-# --- Tests for tools/query.py --- #
+# --- Integration-Style Tests for tools/query.py --- #
+# These tests mock the db_ops layer but test the tool handler logic, #
+# including configuration checks.
+
+@patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
+async def test_vast_sql_query_integration_success(mock_execute_sql):
+    """Test successful SQL query execution (default CSV)."""
+    # Arrange
+    sql = "SELECT id, name FROM users WHERE id = 1"
+    db_result = [{'id': 1, 'name': 'Alice'}]
+    mock_execute_sql.return_value = db_result
+    expected_csv = "id,name\r\n1,Alice\r\n"
+
+    # Act
+    result = await query.vast_sql_query(sql=sql)
+
+    # Assert
+    assert result == expected_csv
+    mock_execute_sql.assert_called_once_with(sql)
+
+@pytest.mark.parametrize("sql, allowed_types, should_pass", [
+    ("SELECT * FROM t", ["SELECT"], True),
+    ("SELECT * FROM t", ["SELECT", "INSERT"], True),
+    ("INSERT INTO t VALUES (1)", ["SELECT"], False),
+    ("INSERT INTO t VALUES (1)", ["SELECT", "INSERT"], True),
+    ("UPDATE t SET c=1", ["SELECT"], False),
+    ("UPDATE t SET c=1", ["SELECT", "UPDATE"], True),
+    ("DELETE FROM t", ["SELECT"], False),
+    ("DELETE FROM t", ["SELECT", "DELETE"], True),
+    ("CREATE TABLE t (id INT)", ["SELECT", "INSERT"], False),
+    ("CREATE TABLE t (id INT)", ["SELECT", "DDL"], True), # Assuming sqlparse uses DDL
+])
+@patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
+async def test_vast_sql_query_integration_type_validation(mock_execute_sql, mocker, sql, allowed_types, should_pass):
+    """Test query type validation respects config.ALLOWED_SQL_TYPES."""
+    # Arrange
+    # Mock the config value for this test
+    mocker.patch.object(config, 'ALLOWED_SQL_TYPES', allowed_types)
+    db_result = [{'id': 1}]
+    mock_execute_sql.return_value = db_result
+
+    # Act
+    if should_pass:
+        result = await query.vast_sql_query(sql=sql)
+        # Assert success (simple check, more detailed in other tests)
+        assert "ERROR:" not in result
+        mock_execute_sql.assert_called_once_with(sql)
+    else:
+        result = await query.vast_sql_query(sql=sql)
+        # Assert failure due to invalid input
+        assert result.startswith("ERROR: [InvalidInputError]")
+        assert "not allowed. Allowed types:" in result
+        mock_execute_sql.assert_not_called() # Should not reach execution
+
+@pytest.mark.parametrize("format_type, expected_prefix, is_json", [
+    ("csv", "ERROR: [QueryExecutionError]", False),
+    ("json", '{"error": {"type": "QueryExecutionError", "message":', True)
+])
+@patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
+async def test_vast_sql_query_integration_db_exception(mock_execute_sql, format_type, expected_prefix, is_json):
+    """Test formatted error messages on DB exceptions (integration style)."""
+    # Arrange
+    sql = "SELECT bad_col FROM t"
+    db_exception = QueryExecutionError("Column not found")
+    mock_execute_sql.side_effect = db_exception
+
+    # Act
+    result = await query.vast_sql_query(sql=sql, format=format_type)
+
+    # Assert
+    mock_execute_sql.assert_called_once_with(sql)
+    assert str(result).startswith(expected_prefix)
+    if is_json:
+        try: json.loads(result) # Check valid JSON
+        except json.JSONDecodeError: pytest.fail("Invalid JSON error response")
+    assert str(db_exception) in str(result)
+
+# --- Existing Unit Tests (Can be kept or refactored) ---
+# The tests below focus more on the formatting logic within the handler itself.
 
 @patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
 async def test_vast_sql_query_format_csv_default(mock_execute_sql):
