@@ -115,6 +115,50 @@ Failure to provide these headers, or providing invalid credentials, will result 
     *   **Safety:** Allowed statement types controlled by `MCP_ALLOWED_SQL_TYPES` env var (defaults to `SELECT`).
     *   **Error Handling:** Returns a formatted error string (JSON or plain text) on failure. Errors include missing/invalid headers (`AuthenticationError`), disallowed query types (`InvalidInputError`), connection issues (`DatabaseConnectionError`), and query execution problems (`QueryExecutionError`).
 
+## AI Agent Interaction Notes
+
+When integrating this MCP server with an AI agent framework (e.g., LangChain, LlamaIndex, custom agents), consider the following:
+
+1.  **Agent Prompting/Configuration:**
+    *   The agent's system prompt or configuration must include descriptions of the available resources and tools (similar to the "Implemented MCP Features" section above). This enables the LLM to choose the correct action based on user requests.
+    *   Since MCP lacks standard discovery, explicitly list the URIs (`vast://schemas`, `vast://tables?...`, `vast://metadata/tables/{name}`, `vast://tables/{name}?....`) and the tool name (`vast_sql_query`) with their capabilities.
+
+2.  **Authentication Handling (Security Critical):**
+    *   **NEVER** include VAST DB credentials (`access_key`, `secret_key`) in prompts sent to the LLM.
+    *   The agent's **orchestrator** (the code running the agent logic, *not* the LLM) is responsible for managing credentials.
+    *   Load credentials securely on the client-side (using environment variables, secrets managers like Vault/AWS/Azure/GCP Secrets Manager, etc.).
+    *   **For Resources:** When the LLM generates a target URI, the orchestrator must:
+        *   Retrieve the stored credentials.
+        *   Construct the `headers` dictionary: `{'X-Vast-Access-Key': '...', 'X-Vast-Secret-Key': '...'}`.
+        *   Map the `vast://` URI scheme to the actual HTTP URL of the running MCP server (e.g., `http://localhost:8088/`).
+        *   Make the HTTP GET request using an MCP client or standard HTTP client, passing the constructed `headers`.
+    *   **For Tools:** When the LLM decides to use the `vast_sql_query` tool and provides the `sql` and `format` arguments, the orchestrator must:
+        *   Retrieve the stored credentials.
+        *   Construct the `headers` dictionary as above.
+        *   **Inject** this `headers` dictionary into the arguments passed to the tool execution function. The LLM should **not** generate the `headers` argument itself.
+
+3.  **Request Construction:**
+    *   The LLM needs to generate the correct URI path parameters (`{table_name}`) and query parameters (`?format=`, `?limit=`) for resources.
+    *   The LLM generates the `sql` and `format` arguments for the `vast_sql_query` tool.
+
+4.  **Response Handling:**
+    *   The client-side agent code needs to handle different response `Content-Type`s (e.g., `text/plain`, `application/json`, `text/csv`).
+    *   It must check response status codes (especially for resources) to detect errors (e.g., 401, 404, 500, 503).
+    *   It needs to parse error messages from the response body (plain text or JSON) and potentially report them back to the user or use them for retries/alternative actions.
+
+## Potential Next Steps
+
+*   Implement robust logging. *(Done)*
+*   Add unit tests. *(Done)*
+*   Refine output formats (e.g., offer JSON alongside CSV). *(Done)*
+*   Enhance error handling and reporting. *(Done - basic custom exceptions and formatting)*
+*   Add more granular resources/tools (e.g., list only tables, get table metadata). *(Done - list tables, table metadata)*
+*   Implement more sophisticated query validation/sandboxing for the `vast_sql_query` tool. *(Done - using sqlparse)*
+*   Make query restrictions (e.g., allowing non-SELECT) configurable. *(Done - via MCP_ALLOWED_SQL_TYPES env var)*
+*   Add integration tests that require a running VAST DB instance or mock server. *(Done - Added ASGI/mocked tests for all current resources/tools)*
+*   Consider adding authentication/authorization layer if needed. *(Done - Header-based authentication)*
+*   Refactor shared code (e.g., `extract_auth_headers`, formatters) into `utils.py`. *(Done)*
+
 ## How to Run
 
 1.  **Clone the repository** (if you haven't already).
