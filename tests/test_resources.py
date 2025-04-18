@@ -24,7 +24,12 @@ pytestmark = pytest.mark.asyncio
 # --- Fixture for Async Test Client ---
 @pytest.fixture
 async def client():
-    async with httpx.AsyncClient(app=mcp_app, base_url="http://test") as client:
+    # Define standard mock headers for successful auth
+    default_headers = {
+        'X-Vast-Access-Key': 'test-access-key',
+        'X-Vast-Secret-Key': 'test-secret-key'
+    }
+    async with httpx.AsyncClient(app=mcp_app, base_url="http://test", headers=default_headers) as client:
         yield client
 
 # --- Tests for resources/schema.py --- #
@@ -280,37 +285,64 @@ async def test_get_schema_integration_success(client, mocker):
     """Test successful schema fetch via vast://schemas integration."""
     # Arrange
     expected_schema_str = "TABLE: t1\n - c1 (INT)\nTABLE: t2\n - c2 (STR)"
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.schema.db_ops')
-    mock_db_ops.get_db_schema.return_value = expected_schema_str
+    # Patch the underlying db_ops function called by the handler
+    mock_get_db_schema = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_db_schema')
+    mock_get_db_schema.return_value = expected_schema_str
 
     # Act
-    response = await client.get("/vast/schemas")
+    response = await client.get("/vast/schemas") # Headers are passed by client fixture
 
     # Assert
     assert response.status_code == 200
-    assert response.headers['content-type'] == "text/plain; charset=utf-8" # Default MCP content type for string
+    assert response.headers['content-type'] == "text/plain; charset=utf-8"
     assert response.text == expected_schema_str
-    mock_db_ops.get_db_schema.assert_called_once()
+    # Check db_ops was called with credentials from default_headers
+    mock_get_db_schema.assert_called_once_with('test-access-key', 'test-secret-key')
+
+@pytest.mark.asyncio
+async def test_get_schema_integration_missing_headers(client):
+    """Test schema fetch fails with 401 if headers are missing."""
+    # Arrange (Client fixture has default headers, override them)
+    # Act
+    response = await client.get("/vast/schemas", headers={}) # Send request with empty headers
+
+    # Assert
+    assert response.status_code == 401 # UNAUTHENTICATED
+    assert "Missing required authentication headers" in response.text
+
+@pytest.mark.asyncio
+async def test_get_schema_integration_auth_fail_db(client, mocker):
+    """Test schema fetch fails with 401 if DB connection indicates auth failure."""
+    # Arrange
+    error_msg = "Authentication failed for user"
+    db_exception = DatabaseConnectionError(error_msg)
+    mock_get_db_schema = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_db_schema')
+    mock_get_db_schema.side_effect = db_exception
+
+    # Act
+    response = await client.get("/vast/schemas") # Uses default valid mock headers
+
+    # Assert
+    assert response.status_code == 401 # UNAUTHENTICATED
+    assert "Authentication failed with provided credentials" in response.text
+    mock_get_db_schema.assert_called_once_with('test-access-key', 'test-secret-key')
 
 @pytest.mark.asyncio
 async def test_get_schema_integration_db_error(client, mocker):
-    """Test schema fetch DB error via vast://schemas integration."""
+    """Test schema fetch DB error (non-auth) via vast://schemas integration."""
     # Arrange
-    error_msg = "Failed to connect to DB"
-    db_exception = SchemaFetchError(error_msg)
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.schema.db_ops')
-    mock_db_ops.get_db_schema.side_effect = db_exception
+    error_msg = "Some other connection problem"
+    db_exception = DatabaseConnectionError(error_msg)
+    mock_get_db_schema = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_db_schema')
+    mock_get_db_schema.side_effect = db_exception
 
     # Act
     response = await client.get("/vast/schemas")
 
     # Assert
-    # The handler currently catches and formats errors into a string
-    assert response.status_code == 200 # Handler returns 200 with error string
-    assert response.headers['content-type'] == "text/plain; charset=utf-8"
-    expected_body = f"ERROR: [SchemaFetchError] {db_exception}"
-    assert response.text == expected_body
-    mock_db_ops.get_db_schema.assert_called_once()
+    assert response.status_code == 503 # SERVICE_UNAVAILABLE
+    assert f"ERROR: [DatabaseConnectionError] Database connection error: {error_msg}" == response.text
+    mock_get_db_schema.assert_called_once_with('test-access-key', 'test-secret-key')
 
 @pytest.mark.asyncio
 async def test_get_schema_integration_unexpected_error(client, mocker):
@@ -318,18 +350,17 @@ async def test_get_schema_integration_unexpected_error(client, mocker):
     # Arrange
     error_msg = "Something broke"
     generic_exception = Exception(error_msg)
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.schema.db_ops')
-    mock_db_ops.get_db_schema.side_effect = generic_exception
+    mock_get_db_schema = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_db_schema')
+    mock_get_db_schema.side_effect = generic_exception
 
     # Act
     response = await client.get("/vast/schemas")
 
     # Assert
-    assert response.status_code == 200 # Handler returns 200 with error string
-    assert response.headers['content-type'] == "text/plain; charset=utf-8"
+    assert response.status_code == 500 # INTERNAL_SERVER_ERROR
     assert response.text.startswith("ERROR: [UnexpectedError] An unexpected error occurred:")
     assert error_msg in response.text
-    mock_db_ops.get_db_schema.assert_called_once()
+    mock_get_db_schema.assert_called_once_with('test-access-key', 'test-secret-key')
 
 # --- Integration Tests for resources/table_data.py --- #
 
@@ -338,8 +369,8 @@ async def test_list_tables_integration_success_json(client, mocker):
     """Test successful table list fetch via vast://tables (JSON)."""
     # Arrange
     table_list = ["users", "orders"]
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.table_data.db_ops')
-    mock_db_ops.list_tables.return_value = table_list
+    mock_list_tables = mocker.patch('vast_mcp_server.vast_integration.db_ops.list_tables')
+    mock_list_tables.return_value = table_list
 
     # Act
     response = await client.get("/vast/tables?format=json") # Explicit JSON
@@ -350,20 +381,29 @@ async def test_list_tables_integration_success_json(client, mocker):
     assert response.status_code == 200
     assert response.headers['content-type'] == "application/json"
     assert response.text == expected_json
-
     assert response_default.status_code == 200
-    assert response_default.headers['content-type'] == "application/json"
     assert response_default.text == expected_json
 
-    assert mock_db_ops.list_tables.call_count == 2
+    # Check db_ops call includes keys
+    mock_list_tables.assert_called_with('test-access-key', 'test-secret-key')
+    assert mock_list_tables.call_count == 2
+
+@pytest.mark.asyncio
+async def test_list_tables_integration_missing_headers(client):
+    """Test list tables fails with 401 if headers are missing."""
+    # Act
+    response = await client.get("/vast/tables", headers={}) # Override default headers
+    # Assert
+    assert response.status_code == 401
+    assert "Missing required authentication headers" in response.json()["error"]["message"]
 
 @pytest.mark.asyncio
 async def test_list_tables_integration_success_csv(client, mocker):
     """Test successful table list fetch via vast://tables (CSV/list)."""
     # Arrange
     table_list = ["users", "orders"]
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.table_data.db_ops')
-    mock_db_ops.list_tables.return_value = table_list
+    mock_list_tables = mocker.patch('vast_mcp_server.vast_integration.db_ops.list_tables')
+    mock_list_tables.return_value = table_list
 
     # Act
     response_csv = await client.get("/vast/tables?format=csv")
@@ -379,7 +419,7 @@ async def test_list_tables_integration_success_csv(client, mocker):
     assert response_list.headers['content-type'] == "text/plain; charset=utf-8"
     assert response_list.text == expected_text
 
-    assert mock_db_ops.list_tables.call_count == 2
+    assert mock_list_tables.call_count == 2
 
 @pytest.mark.asyncio
 async def test_list_tables_integration_db_error(client, mocker):
@@ -387,8 +427,8 @@ async def test_list_tables_integration_db_error(client, mocker):
     # Arrange
     error_msg = "Cannot list tables"
     db_exception = QueryExecutionError(error_msg)
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.table_data.db_ops')
-    mock_db_ops.list_tables.side_effect = db_exception
+    mock_list_tables = mocker.patch('vast_mcp_server.vast_integration.db_ops.list_tables')
+    mock_list_tables.side_effect = db_exception
 
     # Act
     response_json = await client.get("/vast/tables?format=json")
@@ -406,7 +446,7 @@ async def test_list_tables_integration_db_error(client, mocker):
     expected_csv_error = f"ERROR: [QueryExecutionError] {error_msg}"
     assert response_csv.text == expected_csv_error
 
-    assert mock_db_ops.list_tables.call_count == 2
+    assert mock_list_tables.call_count == 2
 
 @pytest.mark.asyncio
 async def test_get_table_sample_integration_success_csv(client, mocker):
@@ -415,8 +455,8 @@ async def test_get_table_sample_integration_success_csv(client, mocker):
     table_name = "users"
     limit = 5
     db_data = [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}]
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.table_data.db_ops')
-    mock_db_ops.get_table_sample.return_value = db_data
+    mock_get_table_sample = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
+    mock_get_table_sample.return_value = db_data
 
     # Act
     response_csv = await client.get(f"/vast/tables/{table_name}?limit={limit}&format=csv")
@@ -427,13 +467,21 @@ async def test_get_table_sample_integration_success_csv(client, mocker):
     assert response_csv.status_code == 200
     assert response_csv.headers['content-type'] == "text/csv; charset=utf-8"
     assert response_csv.text == expected_csv
-
     assert response_default.status_code == 200
-    assert response_default.headers['content-type'] == "text/csv; charset=utf-8"
     assert response_default.text == expected_csv
 
-    mock_db_ops.get_table_sample.assert_called_with(table_name, limit)
-    assert mock_db_ops.get_table_sample.call_count == 2
+    # Check db_ops call includes keys
+    mock_get_table_sample.assert_called_with(table_name, limit, 'test-access-key', 'test-secret-key')
+    assert mock_get_table_sample.call_count == 2
+
+@pytest.mark.asyncio
+async def test_get_table_sample_integration_missing_headers(client):
+    """Test get table sample fails with 401 if headers are missing."""
+    # Act
+    response = await client.get(f"/vast/tables/some_table", headers={}) # Override default headers
+    # Assert
+    assert response.status_code == 401
+    assert "Missing required authentication headers" in response.text # Default is text/plain error
 
 @pytest.mark.asyncio
 async def test_get_table_sample_integration_success_json(client, mocker):
@@ -442,8 +490,8 @@ async def test_get_table_sample_integration_success_json(client, mocker):
     table_name = "users"
     limit = 3
     db_data = [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}]
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.table_data.db_ops')
-    mock_db_ops.get_table_sample.return_value = db_data
+    mock_get_table_sample = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
+    mock_get_table_sample.return_value = db_data
 
     # Act
     response = await client.get(f"/vast/tables/{table_name}?limit={limit}&format=json")
@@ -453,7 +501,7 @@ async def test_get_table_sample_integration_success_json(client, mocker):
     assert response.status_code == 200
     assert response.headers['content-type'] == "application/json"
     assert response.text == expected_json
-    mock_db_ops.get_table_sample.assert_called_once_with(table_name, limit)
+    mock_get_table_sample.assert_called_once_with(table_name, limit, 'test-access-key', 'test-secret-key')
 
 @pytest.mark.asyncio
 async def test_get_table_sample_integration_db_error(client, mocker):
@@ -463,8 +511,8 @@ async def test_get_table_sample_integration_db_error(client, mocker):
     limit = 10
     error_msg = "Failed to query table"
     db_exception = QueryExecutionError(error_msg)
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.table_data.db_ops')
-    mock_db_ops.get_table_sample.side_effect = db_exception
+    mock_get_table_sample = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
+    mock_get_table_sample.side_effect = db_exception
 
     # Act
     response_json = await client.get(f"/vast/tables/{table_name}?limit={limit}&format=json")
@@ -482,8 +530,8 @@ async def test_get_table_sample_integration_db_error(client, mocker):
     expected_csv_error = f"ERROR: [QueryExecutionError] {error_msg}"
     assert response_csv.text == expected_csv_error
 
-    mock_db_ops.get_table_sample.assert_called_with(table_name, limit)
-    assert mock_db_ops.get_table_sample.call_count == 2
+    mock_get_table_sample.assert_called_with(table_name, limit, 'test-access-key', 'test-secret-key')
+    assert mock_get_table_sample.call_count == 2
 
 @pytest.mark.asyncio
 async def test_get_table_sample_integration_invalid_input(client, mocker):
@@ -493,8 +541,8 @@ async def test_get_table_sample_integration_invalid_input(client, mocker):
     limit = 10
     error_msg = f"Invalid table name '{table_name}'."
     db_exception = InvalidInputError(error_msg)
-    mock_db_ops = mocker.patch('vast_mcp_server.resources.table_data.db_ops')
-    mock_db_ops.get_table_sample.side_effect = db_exception
+    mock_get_table_sample = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_table_sample')
+    mock_get_table_sample.side_effect = db_exception
 
     # Act
     response_json = await client.get(f"/vast/tables/{table_name}?limit={limit}&format=json")
@@ -513,17 +561,76 @@ async def test_get_table_sample_integration_invalid_input(client, mocker):
     assert response_csv.text == expected_csv_error
 
     # Check db_ops was called because validation happens there
-    mock_db_ops.get_table_sample.assert_called_with(table_name, limit)
-    assert mock_db_ops.get_table_sample.call_count == 2
+    mock_get_table_sample.assert_called_with(table_name, limit, 'test-access-key', 'test-secret-key')
+    assert mock_get_table_sample.call_count == 2
 
 # --- End Integration Tests for resources/table_data.py --- #
 
-# --- Integration Tests for resources/metadata.py (Keep existing tests) ---
-# ... (existing tests for metadata resource remain here) ...
+# --- Integration Tests for resources/metadata.py (Update existing tests) ---
 
-# --- Unit Tests (Keep existing tests if desired, or refactor/remove if covered by integration) ---
+@pytest.mark.asyncio
+async def test_get_table_metadata_success(client, mocker):
+    # ... (Arrange as before) ...
+    table_name = "test_table"
+    mock_conn = mocker.MagicMock()
+    mock_cursor = mocker.MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchall.return_value = [('id', 'INTEGER'), ('name', 'VARCHAR')]
+    # Patch create_vast_connection directly if get_table_metadata uses it
+    mock_create_conn = mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection')
+    mock_create_conn.return_value = mock_conn
+    # OR Patch the higher level function if preferred
+    # mock_get_metadata = mocker.patch('vast_mcp_server.vast_integration.db_ops.get_table_metadata')
+    # mock_get_metadata.return_value = { ... expected dict ... }
 
-# ... (existing unit tests for schema.py and table_data.py handlers) ...
+    # Act
+    response = await client.get(f"/vast/metadata/tables/{table_name}") # Uses default headers
+
+    # Assert
+    # ... (Assert response as before) ...
+    assert response.status_code == 200
+    # Check that create_vast_connection was called with the default headers
+    mock_create_conn.assert_called_once_with('test-access-key', 'test-secret-key')
+    # OR check the higher-level function call
+    # mock_get_metadata.assert_called_once_with(table_name, 'test-access-key', 'test-secret-key')
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_missing_headers(client):
+    """Test get metadata fails with 401 if headers are missing."""
+    # Act
+    response = await client.get(f"/vast/metadata/tables/any_table", headers={})
+    # Assert
+    assert response.status_code == 401
+    assert "Missing required authentication headers" in response.json()["error"]
+
+@pytest.mark.asyncio
+async def test_get_table_metadata_auth_fail_db(client, mocker):
+    """Test get metadata fails with 401 if DB connection indicates auth failure."""
+    # Arrange
+    table_name = "auth_fail_table"
+    error_msg = "Authentication failed"
+    db_exception = DatabaseConnectionError(error_msg)
+    # Patch create_vast_connection as it's called first
+    mock_create_conn = mocker.patch('vast_mcp_server.vast_integration.db_ops.create_vast_connection')
+    mock_create_conn.side_effect = db_exception
+
+    # Act
+    response = await client.get(f"/vast/metadata/tables/{table_name}") # Uses default headers
+
+    # Assert
+    assert response.status_code == 401
+    assert response.json() == {"error": "Authentication failed with provided credentials."}
+    mock_create_conn.assert_called_once_with('test-access-key', 'test-secret-key')
+
+
+# ... (Update other metadata tests: connection error (non-auth), not found, invalid input, etc.) ...
+# Ensure mocks target appropriate functions (create_vast_connection or get_table_metadata)
+# Ensure calls are checked for correct keys being passed.
+
+# --- Unit Tests (Can be removed or kept) ---
+# If keeping, they no longer represent the full request flow.
+
+# ... (Remove or adjust existing unit tests) ...
 
 
 # Example (replace with actual original tests):

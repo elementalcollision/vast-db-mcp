@@ -15,6 +15,12 @@ from vast_mcp_server.exceptions import (
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
 
+# Standard mock headers for successful calls
+MOCK_HEADERS = {
+    'X-Vast-Access-Key': 'test-access-key',
+    'X-Vast-Secret-Key': 'test-secret-key'
+}
+
 # --- Integration-Style Tests for tools/query.py --- #
 # These tests mock the db_ops layer but test the tool handler logic, #
 # including configuration checks.
@@ -29,11 +35,46 @@ async def test_vast_sql_query_integration_success(mock_execute_sql):
     expected_csv = "id,name\r\n1,Alice\r\n"
 
     # Act
-    result = await query.vast_sql_query(sql=sql)
+    # Pass mock headers
+    result = await query.vast_sql_query(sql=sql, headers=MOCK_HEADERS)
 
     # Assert
     assert result == expected_csv
-    mock_execute_sql.assert_called_once_with(sql)
+    # Check db_ops called with keys
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
+
+@pytest.mark.asyncio
+async def test_vast_sql_query_integration_missing_headers():
+    """Test query fails with auth error if headers are missing."""
+    # Arrange
+    sql = "SELECT 1"
+
+    # Act
+    result_none = await query.vast_sql_query(sql=sql, headers=None)
+    result_empty = await query.vast_sql_query(sql=sql, headers={})
+    result_partial = await query.vast_sql_query(sql=sql, headers={'X-Vast-Access-Key': 'key'})
+
+    # Assert
+    assert result_none.startswith("ERROR: [AuthenticationError] Authentication headers are missing")
+    assert result_empty.startswith("ERROR: [AuthenticationError] Missing required authentication headers")
+    assert result_partial.startswith("ERROR: [AuthenticationError] Missing required authentication headers: X-Vast-Secret-Key")
+
+@pytest.mark.asyncio
+@patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
+async def test_vast_sql_query_integration_auth_fail_db(mock_execute_sql):
+    """Test query fails with auth error if db_ops indicates auth failure."""
+    # Arrange
+    sql = "SELECT * FROM secrets"
+    error_msg = "Authentication failed for user's key"
+    db_exception = DatabaseConnectionError(error_msg)
+    mock_execute_sql.side_effect = db_exception
+
+    # Act
+    result = await query.vast_sql_query(sql=sql, headers=MOCK_HEADERS)
+
+    # Assert
+    assert result == "ERROR: [AuthenticationError] Authentication failed with provided credentials."
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
 
 @pytest.mark.parametrize("sql, allowed_types, should_pass", [
     ("SELECT * FROM t", ["SELECT"], True),
@@ -51,23 +92,23 @@ async def test_vast_sql_query_integration_success(mock_execute_sql):
 async def test_vast_sql_query_integration_type_validation(mock_execute_sql, mocker, sql, allowed_types, should_pass):
     """Test query type validation respects config.ALLOWED_SQL_TYPES."""
     # Arrange
-    # Mock the config value for this test
     mocker.patch.object(config, 'ALLOWED_SQL_TYPES', allowed_types)
     db_result = [{'id': 1}]
     mock_execute_sql.return_value = db_result
 
     # Act
     if should_pass:
-        result = await query.vast_sql_query(sql=sql)
-        # Assert success (simple check, more detailed in other tests)
+        # Pass mock headers
+        result = await query.vast_sql_query(sql=sql, headers=MOCK_HEADERS)
         assert "ERROR:" not in result
-        mock_execute_sql.assert_called_once_with(sql)
+        # Check db_ops called with keys
+        mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
     else:
-        result = await query.vast_sql_query(sql=sql)
-        # Assert failure due to invalid input
+        # Pass mock headers (db_ops won't be called anyway)
+        result = await query.vast_sql_query(sql=sql, headers=MOCK_HEADERS)
         assert result.startswith("ERROR: [InvalidInputError]")
         assert "not allowed. Allowed types:" in result
-        mock_execute_sql.assert_not_called() # Should not reach execution
+        mock_execute_sql.assert_not_called()
 
 @pytest.mark.parametrize("format_type, expected_prefix, is_json", [
     ("csv", "ERROR: [QueryExecutionError]", False),
@@ -75,22 +116,26 @@ async def test_vast_sql_query_integration_type_validation(mock_execute_sql, mock
 ])
 @patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
 async def test_vast_sql_query_integration_db_exception(mock_execute_sql, format_type, expected_prefix, is_json):
-    """Test formatted error messages on DB exceptions (integration style)."""
+    """Test formatted error messages on DB exceptions (non-auth, integration style)."""
     # Arrange
     sql = "SELECT bad_col FROM t"
     db_exception = QueryExecutionError("Column not found")
     mock_execute_sql.side_effect = db_exception
 
     # Act
-    result = await query.vast_sql_query(sql=sql, format=format_type)
+    # Pass mock headers
+    result = await query.vast_sql_query(sql=sql, format=format_type, headers=MOCK_HEADERS)
 
     # Assert
-    mock_execute_sql.assert_called_once_with(sql)
+    # Check db_ops called with keys
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
     assert str(result).startswith(expected_prefix)
     if is_json:
-        try: json.loads(result) # Check valid JSON
+        try: json.loads(result)
         except json.JSONDecodeError: pytest.fail("Invalid JSON error response")
+    # Ensure original error message is present (and not the simplified auth one)
     assert str(db_exception) in str(result)
+    assert "Authentication failed" not in str(result)
 
 # --- Existing Unit Tests (Can be kept or refactored) ---
 # The tests below focus more on the formatting logic within the handler itself.
@@ -105,11 +150,11 @@ async def test_vast_sql_query_format_csv_default(mock_execute_sql):
     expected_csv = "id,name\r\n1,Alice\r\n"
 
     # Act
-    result = await query.vast_sql_query(sql=sql)
+    result = await query.vast_sql_query(sql=sql, headers=MOCK_HEADERS)
 
     # Assert
     assert result == expected_csv
-    mock_execute_sql.assert_called_once_with(sql)
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
 
 @patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
 async def test_vast_sql_query_format_csv_explicit(mock_execute_sql):
@@ -121,11 +166,11 @@ async def test_vast_sql_query_format_csv_explicit(mock_execute_sql):
     expected_csv = "id,name\r\n1,Alice\r\n"
 
     # Act
-    result = await query.vast_sql_query(sql=sql, format="csv")
+    result = await query.vast_sql_query(sql=sql, format="csv", headers=MOCK_HEADERS)
 
     # Assert
     assert result == expected_csv
-    mock_execute_sql.assert_called_once_with(sql)
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
 
 @patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
 async def test_vast_sql_query_format_json(mock_execute_sql):
@@ -137,11 +182,11 @@ async def test_vast_sql_query_format_json(mock_execute_sql):
     expected_json = json.dumps(db_result, indent=2)
 
     # Act
-    result = await query.vast_sql_query(sql=sql, format="json")
+    result = await query.vast_sql_query(sql=sql, format="json", headers=MOCK_HEADERS)
 
     # Assert
     assert result == expected_json
-    mock_execute_sql.assert_called_once_with(sql)
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
 
 @patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
 async def test_vast_sql_query_format_invalid(mock_execute_sql):
@@ -153,11 +198,11 @@ async def test_vast_sql_query_format_invalid(mock_execute_sql):
     expected_csv = "id\r\n1\r\n"
 
     # Act
-    result = await query.vast_sql_query(sql=sql, format="yaml") # Invalid format
+    result = await query.vast_sql_query(sql=sql, format="yaml", headers=MOCK_HEADERS) # Invalid format
 
     # Assert
     assert result == expected_csv
-    mock_execute_sql.assert_called_once_with(sql)
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
 
 @patch('vast_mcp_server.vast_integration.db_ops.execute_sql_query')
 async def test_vast_sql_query_db_message_string(mock_execute_sql):
@@ -168,13 +213,13 @@ async def test_vast_sql_query_db_message_string(mock_execute_sql):
     mock_execute_sql.return_value = db_message
 
     # Act
-    result_csv = await query.vast_sql_query(sql=sql, format="csv")
+    result_csv = await query.vast_sql_query(sql=sql, format="csv", headers=MOCK_HEADERS)
     # result_json = await query.vast_sql_query(sql=sql, format="json")
 
     # Assert
     assert result_csv == db_message
     # assert json.loads(result_json) == {"message": db_message} # Optional check
-    mock_execute_sql.assert_called_once_with(sql)
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
 
 @pytest.mark.parametrize("format_type, expected_prefix, is_json", [
     ("csv", "ERROR: [QueryExecutionError]", False),
@@ -189,10 +234,10 @@ async def test_vast_sql_query_db_exception(mock_execute_sql, format_type, expect
     mock_execute_sql.side_effect = db_exception
 
     # Act
-    result = await query.vast_sql_query(sql=sql, format=format_type)
+    result = await query.vast_sql_query(sql=sql, format=format_type, headers=MOCK_HEADERS)
 
     # Assert
-    mock_execute_sql.assert_called_once_with(sql)
+    mock_execute_sql.assert_called_once_with(sql, MOCK_HEADERS['X-Vast-Access-Key'], MOCK_HEADERS['X-Vast-Secret-Key'])
     assert str(result).startswith(expected_prefix)
     if is_json:
         try: json.loads(result) # Check valid JSON
@@ -212,7 +257,7 @@ async def test_vast_sql_query_invalid_input_exception(mock_execute_sql, format_t
     mock_execute_sql.side_effect = db_exception
 
     # Act
-    result = await query.vast_sql_query(sql=sql, format=format_type)
+    result = await query.vast_sql_query(sql=sql, format=format_type, headers=MOCK_HEADERS)
 
     # Assert
     mock_execute_sql.assert_called_once_with(sql)
