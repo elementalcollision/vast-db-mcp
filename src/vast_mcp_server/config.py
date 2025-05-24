@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # VAST DB Connection Details
+# These credentials are used by the server's lifespan manager to establish the primary
+# connection to the VAST DB at application startup.
+# They also serve as the reference against which incoming API request headers
+# (X-Vast-Access-Key, X-Vast-Secret-Key) are validated for authentication.
 VAST_DB_ENDPOINT = os.getenv("VAST_DB_ENDPOINT", "http://<your-vast-endpoint>") # Replace with your VAST endpoint or set via .env
 VAST_ACCESS_KEY = os.getenv("VAST_ACCESS_KEY", "<your-access-key>")         # Replace or set via .env
 VAST_SECRET_KEY = os.getenv("VAST_SECRET_KEY", "<your-secret-key>")         # Replace or set via .env
