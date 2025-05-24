@@ -30,20 +30,32 @@ from .resources import metadata     # Registers metadata resource
 from .tools import query            # Registers query tool
 logger.info("MCP resources and tools registered.")
 
-# Create the FastMCP application instance
-mcp_app = FastMCP("VAST DB MCP Server", description="An MCP server to interact with VAST DB.")
-logger.info("FastMCP application instance created.")
+from .lifespan import app_lifespan # Import the lifespan manager
+
+# Create the FastMCP application instance.
+# This is the main entry point for the ASGI application.
+# The `lifespan` argument is used to manage resources that are shared across
+# the entire application lifecycle, such as the VAST DB connection pool.
+mcp_app = FastMCP(
+    "VAST DB MCP Server",
+    description="An MCP server to interact with VAST DB.",
+    lifespan=app_lifespan
+)
+logger.info("FastMCP application instance created with lifespan manager.")
 
 # Add Rate Limiter State and Middleware
 mcp_app.state.limiter = limiter
 mcp_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Note: FastMCP app is likely a Starlette app, so add_middleware should work
 # If FastMCP uses a different underlying framework, this might need adjustment
-# mcp_app.add_middleware(SlowAPIMiddleware) # This line causes issues with FastMCP's routing
-# Instead, we might need to add limits directly to routes or use a different integration method
-# For now, we'll rely on applying limits within handlers if needed, or explore FastMCP-specific middleware
-# Since global middleware isn't straightforward, we'll skip adding it for now and rely on potential future handler-level limits.
-logger.warning("Global SlowAPI middleware integration skipped due to potential FastMCP conflicts. Consider handler-level limits if needed.")
+# mcp_app.add_middleware(SlowAPIMiddleware) # This line causes issues with FastMCP's routing.
+# FastMCP's design might require a different approach for global middleware or it might
+# be preferred to apply rate limits directly to resource/tool handlers using decorators,
+# which is the current approach.
+logger.warning(
+    "Global SlowAPIMiddleware integration with FastMCP is not straightforward and has been skipped. "
+    "Rate limits are applied directly to handlers via decorators."
+)
 
 # --- Resources and Tools are registered via decorators in imported modules ---
 # @mcp_app.resource("vast://schemas") -> Handled in resources/schema.py

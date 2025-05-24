@@ -26,64 +26,29 @@ SchemaResult = str
 # Define type alias for structured Table Metadata
 TableMetadataResult = Dict[str, Any]
 
-def create_vast_connection(access_key: str, secret_key: str) -> vastdb.api.VastSession:
-    """Creates and returns a VAST DB connection session using provided credentials.
-
-    Uses the endpoint from config, but requires access/secret keys.
-
-    Args:
-        access_key: The VAST DB access key.
-        secret_key: The VAST DB secret key.
-
-    Returns:
-        vastdb.api.VastSession: An active VAST DB session.
-
-    Raises:
-        DatabaseConnectionError: If connection fails.
-        ValueError: If keys are missing.
-    """
-    if not access_key or not secret_key:
-        logger.error("Missing VAST DB access key or secret key for connection.")
-        raise ValueError("Access key and secret key are required.")
-
-    # Endpoint still comes from config, but keys are passed in
-    endpoint = config.VAST_DB_ENDPOINT
-    logger.debug("Attempting to connect to VAST DB at %s with provided keys.", endpoint)
-    try:
-        # Adjust based on the actual VAST DB SDK's connect function signature.
-        conn = vastdb.connect(
-            endpoint=endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
-            # Add any other necessary connection parameters here, e.g., verify_ssl=False
-        )
-        logger.info("Successfully connected to VAST DB.")
-        return conn
-    except Exception as e:
-        logger.error("Connection to VAST DB failed: %s", e, exc_info=True)
-        # Wrap the original exception
-        raise DatabaseConnectionError(f"Failed to connect to VAST DB: {e}", original_exception=e)
-
+# create_vast_connection function has been removed as connections are managed by the application's lifespan.
 
 # --- Database Operations ---
 
-def _fetch_schema_sync(access_key: str, secret_key: str) -> SchemaResult:
-    """Synchronous helper function to fetch and format schema.
+def _fetch_schema_sync(conn: vastdb.api.VastSession) -> SchemaResult:
+    """Synchronous helper to fetch and format schema using an active VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session, typically managed by the application's lifespan.
 
     Returns:
-        str: A string representation of the schema.
+        str: A string representation of the database schema.
 
     Raises:
-        DatabaseConnectionError: If connection fails.
         SchemaFetchError: If unable to fetch schema.
         TableDescribeError: If unable to describe tables.
     """
-    logger.debug("Starting synchronous schema fetch.")
-    conn = None
+    logger.debug("Starting synchronous schema fetch with provided connection.")
     try:
-        conn = create_vast_connection(access_key, secret_key)
-        if not conn: # Connection might have failed and raised in create_vast_connection
-             return "Error: Failed to establish database connection for schema fetch."
+        if not conn:
+             logger.error("Provided VAST DB connection is None for schema fetch.")
+             # This should ideally not happen if lifespan manager works correctly
+             raise DatabaseConnectionError("Provided database connection is invalid.")
         cursor = conn.cursor()
 
         logger.debug("Executing SHOW TABLES")
@@ -129,30 +94,39 @@ def _fetch_schema_sync(access_key: str, secret_key: str) -> SchemaResult:
         logger.debug("Schema fetch completed.")
         return schema_output
 
-    except DatabaseConnectionError: # Re-raise specific connection errors
-        raise
+    # Removed DatabaseConnectionError catch as connection is now passed in.
+    # Lifespan manager handles initial connection. If conn is bad, cursor ops will fail.
     except Exception as e:
         logger.error("Generic error during schema fetch: %s", e, exc_info=True)
         raise SchemaFetchError(f"Error fetching schema: {e}", original_exception=e)
-    finally:
-        if conn:
-            try:
-                logger.debug("Closing VAST DB connection after schema fetch.")
-                conn.close()
-            except Exception as close_e:
-                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
+    # finally block for closing connection is removed as it's managed by the lifespan.
 
-async def get_db_schema(access_key: str, secret_key: str) -> SchemaResult:
-    """Fetches the database schema asynchronously using provided credentials."""
+async def get_db_schema(conn: vastdb.api.VastSession) -> SchemaResult:
+    """Fetches the database schema asynchronously using a provided VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+
+    Returns:
+        A string representation of the database schema.
+    """
     logger.info("Received request to fetch DB schema.")
-    return await asyncio.to_thread(_fetch_schema_sync, access_key, secret_key)
+    return await asyncio.to_thread(_fetch_schema_sync, conn)
 
-def _list_tables_sync(access_key: str, secret_key: str) -> List[str]:
-    """Synchronous helper to fetch table names using provided credentials."""
-    logger.debug("Starting synchronous table list fetch.")
-    conn = None
+def _list_tables_sync(conn: vastdb.api.VastSession) -> List[str]:
+    """Synchronous helper to fetch table names using an active VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+
+    Returns:
+        A list of table names.
+    """
+    logger.debug("Starting synchronous table list fetch with provided connection.")
     try:
-        conn = create_vast_connection(access_key, secret_key) # Use provided keys
+        if not conn:
+            logger.error("Provided VAST DB connection is None for listing tables.")
+            raise DatabaseConnectionError("Provided database connection is invalid.")
         cursor = conn.cursor()
         logger.debug("Executing SHOW TABLES")
         cursor.execute("SHOW TABLES")
@@ -160,35 +134,43 @@ def _list_tables_sync(access_key: str, secret_key: str) -> List[str]:
         table_names = [t[0] for t in tables if t]
         logger.info("Found %d tables: %s", len(table_names), table_names)
         return table_names
-    except DatabaseConnectionError:
-        raise
     except Exception as e:
         logger.error("Error executing SHOW TABLES: %s", e, exc_info=True)
         raise QueryExecutionError(f"Failed to list tables: {e}", original_exception=e)
-    finally:
-        if conn:
-            try:
-                logger.debug("Closing VAST DB connection after listing tables.")
-                conn.close()
-            except Exception as close_e:
-                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
+    # finally block for closing connection is removed as it's managed by the lifespan.
 
-async def list_tables(access_key: str, secret_key: str) -> List[str]:
-    """Fetches a list of table names asynchronously using provided credentials."""
+async def list_tables(conn: vastdb.api.VastSession) -> List[str]:
+    """Fetches a list of table names asynchronously using a provided VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+
+    Returns:
+        A list of table names.
+    """
     logger.info("Received request to list tables.")
-    return await asyncio.to_thread(_list_tables_sync, access_key, secret_key)
+    return await asyncio.to_thread(_list_tables_sync, conn)
 
-def _get_table_metadata_sync(table_name: str, access_key: str, secret_key: str) -> TableMetadataResult:
-    """Synchronous helper to get metadata for a specific table using provided credentials."""
-    logger.debug("Starting synchronous metadata fetch for table '%s'.", table_name)
-    conn = None
+def _get_table_metadata_sync(conn: vastdb.api.VastSession, table_name: str) -> TableMetadataResult:
+    """Synchronous helper to get metadata for a specific table using an active VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+        table_name: The name of the table to describe.
+
+    Returns:
+        A dictionary containing the table's metadata.
+    """
+    logger.debug("Starting synchronous metadata fetch for table '%s' with provided connection.", table_name)
     try:
         # Basic input validation
         if not table_name.isidentifier():
             logger.warning("Invalid table name requested for metadata: %s", table_name)
             raise InvalidInputError(f"Invalid table name '{table_name}'.")
 
-        conn = create_vast_connection(access_key, secret_key) # Use provided keys
+        if not conn:
+            logger.error("Provided VAST DB connection is None for table metadata fetch.")
+            raise DatabaseConnectionError("Provided database connection is invalid.")
         cursor = conn.cursor()
 
         logger.debug("Describing table: %s", table_name)
@@ -228,33 +210,42 @@ def _get_table_metadata_sync(table_name: str, access_key: str, secret_key: str) 
 
     except InvalidInputError:
         raise # Propagate invalid input directly
-    except DatabaseConnectionError:
-        raise # Propagate connection errors directly
+    # Removed DatabaseConnectionError catch as connection is now passed in.
     except Exception as e:
         # Treat other exceptions during describe as TableDescribeError
         logger.error("Error describing table '%s': %s", table_name, e, exc_info=True)
         raise TableDescribeError(f"Failed to describe table '{table_name}': {e}", original_exception=e)
-    finally:
-        if conn:
-            try:
-                logger.debug("Closing VAST DB connection after metadata fetch.")
-                conn.close()
-            except Exception as close_e:
-                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
+    # finally block for closing connection is removed as it's managed by the lifespan.
 
-async def get_table_metadata(table_name: str, access_key: str, secret_key: str) -> TableMetadataResult:
-    """Fetches metadata for a specific table asynchronously using provided credentials."""
+async def get_table_metadata(conn: vastdb.api.VastSession, table_name: str) -> TableMetadataResult:
+    """Fetches metadata for a specific table asynchronously using a provided VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+        table_name: The name of the table to describe.
+
+    Returns:
+        A dictionary containing the table's metadata.
+    """
     logger.info("Received request for metadata for table: %s", table_name)
-    return await asyncio.to_thread(_get_table_metadata_sync, table_name, access_key, secret_key)
+    return await asyncio.to_thread(_get_table_metadata_sync, conn, table_name)
 
-def _fetch_table_sample_sync(table_name: str, limit: int, access_key: str, secret_key: str) -> QueryResult:
-    """Synchronous helper function to fetch table sample data using provided credentials."""
-    logger.debug("Starting synchronous table sample fetch for table '%s' limit %d.", table_name, limit)
-    conn = None
+def _fetch_table_sample_sync(conn: vastdb.api.VastSession, table_name: str, limit: int) -> QueryResult:
+    """Synchronous helper to fetch table sample data using an active VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+        table_name: The name of the table to sample.
+        limit: The maximum number of rows to return.
+
+    Returns:
+        A list of dictionaries representing table rows, or a string message if no data.
+    """
+    logger.debug("Starting synchronous table sample fetch for table '%s' limit %d with provided connection.", table_name, limit)
     try:
-        conn = create_vast_connection(access_key, secret_key) # Use provided keys
         if not conn:
-            return "Error: Failed to establish database connection for table sample fetch."
+            logger.error("Provided VAST DB connection is None for table sample fetch.")
+            raise DatabaseConnectionError("Provided database connection is invalid.")
         cursor = conn.cursor()
 
         # Basic input validation
@@ -284,27 +275,40 @@ def _fetch_table_sample_sync(table_name: str, limit: int, access_key: str, secre
 
     except InvalidInputError:
         raise # Propagate invalid input errors directly
-    except DatabaseConnectionError:
-        raise # Propagate connection errors directly
+    # Removed DatabaseConnectionError catch as connection is now passed in.
     except Exception as e:
         # Assume other errors are query execution related for this function
         logger.error("Error executing sample query for table '%s': %s", table_name, e, exc_info=True)
         raise QueryExecutionError(f"Failed to execute sample query for table '{table_name}': {e}", original_exception=e)
-    finally:
-        if conn:
-            try:
-                logger.debug("Closing VAST DB connection after table sample fetch.")
-                conn.close()
-            except Exception as close_e:
-                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
+    # finally block for closing connection is removed as it's managed by the lifespan.
 
-async def get_table_sample(table_name: str, limit: int, access_key: str, secret_key: str) -> QueryResult:
-    """Fetches a sample of data from a table asynchronously using provided credentials."""
+async def get_table_sample(conn: vastdb.api.VastSession, table_name: str, limit: int) -> QueryResult:
+    """Fetches a sample of data from a table asynchronously using a provided VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+        table_name: The name of the table to sample.
+        limit: The maximum number of rows to return.
+
+    Returns:
+        A list of dictionaries representing table rows, or a string message if no data.
+    """
     logger.info("Received request for table sample: table='%s', limit=%d", table_name, limit)
-    return await asyncio.to_thread(_fetch_table_sample_sync, table_name, limit, access_key, secret_key)
+    return await asyncio.to_thread(_fetch_table_sample_sync, conn, table_name, limit)
 
-def _execute_sql_sync(sql: str, access_key: str, secret_key: str) -> QueryResult:
-    """Synchronous helper function to execute SQL query using provided credentials."""
+def _execute_sql_sync(conn: vastdb.api.VastSession, sql: str) -> QueryResult:
+    """Synchronous helper to execute SQL query using an active VAST DB connection.
+
+    Validates the SQL query type against configured allowed types before execution.
+
+    Args:
+        conn: An active VAST DB session.
+        sql: The SQL query string to execute.
+
+    Returns:
+        A list of dictionaries representing query results, or a string message for non-SELECT queries
+        or if no data is returned.
+    """
     logger.debug("Starting synchronous SQL execution: %s...", sql[:100])
 
     # --- Query Validation using sqlparse ---
@@ -343,14 +347,10 @@ def _execute_sql_sync(sql: str, access_key: str, secret_key: str) -> QueryResult
         raise InvalidInputError(f"Failed to parse SQL query: {parse_e}")
     # --- End Query Validation ---
 
-    conn = None
     try:
-        conn = create_vast_connection(access_key, secret_key) # Use provided keys
         if not conn:
-            # This condition might be less likely if create_vast_connection raises reliably
-            logger.error("Failed to establish database connection for SQL execution (conn is None).")
-            raise DatabaseConnectionError("Failed to establish database connection.")
-
+            logger.error("Provided VAST DB connection is None for SQL execution.")
+            raise DatabaseConnectionError("Provided database connection is invalid.")
         cursor = conn.cursor()
 
         logger.debug("Executing validated SQL query.")
@@ -377,22 +377,23 @@ def _execute_sql_sync(sql: str, access_key: str, secret_key: str) -> QueryResult
 
     except InvalidInputError:
         raise # Propagate our own validation errors
-    except DatabaseConnectionError:
-        raise # Propagate connection errors
+    # Removed DatabaseConnectionError catch as connection is now passed in.
     except Exception as e:
         # Catch errors during VAST DB execution (e.g., syntax errors VAST finds)
         logger.error("Error executing SQL query in VAST DB: %s", e, exc_info=True)
         # Map VAST DB execution errors to QueryExecutionError
         raise QueryExecutionError(f"Error executing SQL query: {e}", original_exception=e)
-    finally:
-        if conn:
-            try:
-                logger.debug("Closing VAST DB connection after SQL query execution.")
-                conn.close()
-            except Exception as close_e:
-                logger.warning("Error closing VAST DB connection: %s", close_e, exc_info=True)
+    # finally block for closing connection is removed as it's managed by the lifespan.
 
-async def execute_sql_query(sql: str, access_key: str, secret_key: str) -> QueryResult:
-    """Executes a SQL query asynchronously using provided credentials."""
+async def execute_sql_query(conn: vastdb.api.VastSession, sql: str) -> QueryResult:
+    """Executes a SQL query asynchronously using a provided VAST DB connection.
+
+    Args:
+        conn: An active VAST DB session.
+        sql: The SQL query string to execute.
+
+    Returns:
+        A list of dictionaries representing query results, or a string message.
+    """
     logger.info("Received request to execute SQL query: %s...", sql[:100])
-    return await asyncio.to_thread(_execute_sql_sync, sql, access_key, secret_key)
+    return await asyncio.to_thread(_execute_sql_sync, conn, sql)
