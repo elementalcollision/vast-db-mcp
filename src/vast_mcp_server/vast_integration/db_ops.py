@@ -368,11 +368,22 @@ def _execute_sql_sync(conn: vastdb.api.VastSession, sql: str) -> QueryResult:
 
         results = cursor.fetchall()
         column_names = [desc[0] for desc in cursor.description]
-        logger.info("SQL query returned %d rows with columns: %s", len(results), column_names)
+        logger.info(
+            "SQL query returned %d rows with columns: %s", len(results), column_names
+        )
+
+        if not results:
+            # An empty result set should return the standard informational message
+            logger.info(
+                "SQL query executed successfully but returned no rows for a SELECT"
+            )
+            return "-- Query executed successfully, but returned no rows. --"
 
         # Convert results to list of dictionaries
         structured_results = [dict(zip(column_names, row)) for row in results]
-        logger.debug("Returning %d structured results for SQL query.", len(structured_results))
+        logger.debug(
+            "Returning %d structured results for SQL query.", len(structured_results)
+        )
         return structured_results
 
     except InvalidInputError:
